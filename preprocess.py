@@ -1,0 +1,638 @@
+#%% imports
+
+import sys
+import os
+import argparse
+import scipy
+import numpy as np
+import pandas as pd
+import re
+from scipy import signal
+try:
+    import spikeinterface as si  # import core only
+    import spikeinterface.extractors as se
+    import spikeinterface.preprocessing as spre
+    import spikeinterface.sorters as ss
+    import spikeinterface.postprocessing as spost
+    import spikeinterface.comparison as sc
+    import spikeinterface.exporters as sexp
+    import spikeinterface.curation as scur
+    import spikeinterface.widgets as sw
+except ModuleNotFoundError:
+    si = None
+    se = None
+    spre = None
+    ss = None
+    spost = None
+    sc = None
+    sexp = None
+    scur = None
+    sw = None
+
+"""
+OVERALL PREPROCESSING PIPELINE
+1. Read NS5/NS3.
+2. Extract raw signal, channel info, fs, timestamps, TTL/events.
+3. Select channels from target regions.
+4. Detect bad channels and bad time intervals.
+5. Re-reference.
+6. Remove line noise / mark contaminated frequencies.
+7. Low-pass anti-alias filter.
+8. Downsample to 1 kHz.
+9. Save preprocessed LFP matrix: channels × time.
+"""
+
+if sys.platform == 'linux':
+    PREFIX = os.environ.get(
+        'SPECTRAL_SUBSPACE_PREFIX',
+        os.path.join(os.path.expanduser('~'), 'hungyun-elias', 'data'),
+    )
+elif sys.platform == 'darwin': # Data are stored on my MacBook locally. 
+    PREFIX = os.environ.get('SPECTRAL_SUBSPACE_PREFIX', 'data')
+SESSIONS_CSV = os.path.join(PREFIX, 'sessions.csv')
+
+# The local form (REMOTE=False) is temporary because ideally we don't want to store all ns5 files locally.
+# Instead the neural folder should store the preprocessed LFP matrices.
+REMOTE = True
+if REMOTE:
+    DATADIR = os.environ.get('SPECTRAL_SUBSPACE_DATADIR', "/Volumes/stitched/EMU-18112")
+    if not os.path.exists(DATADIR):
+        raise FileNotFoundError(f"Data directory not found: {DATADIR}")
+else:
+    DATADIR = os.path.join(PREFIX, 'neural')
+
+DEFAULT_REGIONS = ['HPC']
+
+def get_ns5_path(subject, emu_id):
+    """Construct the expected NS5 file path for a given session."""
+    if not REMOTE: 
+        return os.path.join(DATADIR, f"{subject}_{emu_id:04d}_pursuit.ns5")
+    
+    subj_folder = os.path.join(DATADIR, subject)
+    prefix = f"EMU-{emu_id:04d}"
+    session_name = next((f for f in os.listdir(subj_folder) if f.startswith(prefix)), None)
+    if session_name is None:
+        raise FileNotFoundError(f"No session folder found for EMU-{emu_id:04d} in {subj_folder}")
+    
+    session_folder = os.path.join(subj_folder, session_name)
+    file_name = next((f for f in os.listdir(session_folder) if f.endswith("NSP-2.ns5")), None)
+    if file_name is None:
+        raise FileNotFoundError(f"No NS5 file found in {session_folder} for EMU-{emu_id:04d}")
+    nsp2_ns5_path = os.path.join(session_folder, file_name)
+
+    return nsp2_ns5_path
+
+
+def load_sessions():
+    """Load the sessions table and attach NS5 metadata."""
+    sessions = pd.read_csv(SESSIONS_CSV)
+    if 'ns5_path' not in sessions.columns:
+        sessions['ns5_path'] = sessions.apply(
+            lambda row: get_ns5_path(row['patient'], row['emu_id']),
+            axis=1,
+        )
+    sessions['size'] = sessions['ns5_path'].apply(lambda p: os.path.getsize(p))
+    return sessions
+
+
+def get_session_row(subject, emu_id, sessions=None):
+    """Return the session row for one subject/EMU pair."""
+    if sessions is None:
+        sessions = load_sessions()
+
+    matches = sessions[
+        (sessions['patient'] == subject) &
+        (sessions['emu_id'].astype(int) == int(emu_id))
+    ]
+    if matches.empty:
+        raise ValueError(f'No session found for patient={subject}, emu_id={int(emu_id):04d}')
+    return matches.iloc[0]
+
+#%% Load one recording
+
+TARGET_LABEL_TO_REGION = {
+    'H': 'HPC',
+    'C': 'ACC',
+    'A': 'AMY',
+    'PH': 'PHG',
+    'I': 'INS',
+    'OF': 'OFC',
+    'OT': 'OTG',
+}
+
+SENSA_CHANNEL_PATTERN = re.compile(
+    r'^m(?P<hemi>[LR])'
+    r'(?P<entry>[FPOT]\d+[a-z]?)'
+    r'(?P<targets>(?:PH|OF|OT|[A-Z][a-z]?)+)'
+    r'(?P<contact>\d+)-(?P<channel>\d+)$'
+)
+
+
+def parse_sensa_channel_name(channel_name):
+    """
+    Parse SENSA channel names into hemisphere and terminal target region.
+
+    This follows the naming rules in SENSA_mapping_rules.txt:
+    side is encoded by L/R, and the distal target label determines region.
+    Non-neural analog inputs return NaN values.
+    """
+    if not isinstance(channel_name, str):
+        return pd.Series({'hemi': np.nan, 'region': np.nan})
+
+    match = SENSA_CHANNEL_PATTERN.match(channel_name)
+    if match is None:
+        return pd.Series({'hemi': np.nan, 'region': np.nan})
+
+    hemisphere = 'left' if match.group('hemi') == 'L' else 'right'
+    target_string = match.group('targets')
+
+    # Targets can be chained (proximal -> distal), so keep the last target.
+    target_labels = re.findall(r'PH|OF|OT|[A-Z]', target_string)
+    target_label = target_labels[-1] if target_labels else None
+    region = TARGET_LABEL_TO_REGION.get(target_label, np.nan)
+
+    return pd.Series({'hemi': hemisphere, 'region': region})
+
+
+def load_blackrock_recording(path_to_file):
+    """Load a Blackrock recording using SpikeInterface."""
+    if se is None:
+        raise ModuleNotFoundError(
+            "spikeinterface is required to load Blackrock recordings. "
+            "Please activate the environment that has it installed."
+        )
+    recording = se.read_blackrock(path_to_file)
+    return recording
+
+def build_all_chan(recording):
+    """Build a DataFrame with channel metadata."""
+    channel_ids = recording.get_channel_ids()
+    channel_names = recording.get_property("channel_name")
+    channel_gains = recording.get_property("gain_to_uV")
+    df = pd.DataFrame({
+        "channel_id": channel_ids,
+        "channel_name": channel_names,
+        "gain_to_uV": channel_gains,
+    })
+    parsed = df['channel_name'].apply(parse_sensa_channel_name)
+    df = pd.concat([df, parsed], axis=1)
+    return df
+
+def downsample(traces, fs=30000, target_fs=1000, lowpass_hz=400):
+    traces_f = signal.sosfiltfilt(signal.butter(6, lowpass_hz, btype='low', fs=fs, output='sos'), traces, axis=0)
+    traces_ds = signal.resample_poly(traces_f, up=target_fs, down=fs, axis=0)
+    return traces_ds
+
+
+def get_output_mat_path(ns5_path, output_dir=None):
+    """Build the default output path for a downsampled LFP .mat file."""
+    if output_dir is None:
+        output_dir = os.path.join(PREFIX, 'neural')
+    stem = os.path.splitext(os.path.basename(ns5_path))[0]
+    return os.path.join(output_dir, f'{stem}_ds_lfp.mat')
+
+
+def save_downsampled_lfp_mat(lfp, output_path, target_fs=1000, lowpass_hz=400):
+    """Save downsampled LFP and basic metadata to a MATLAB .mat file."""
+    if not hasattr(lfp, 'raw_lfp'):
+        lfp.load_raw_lfp()
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    lfp_ds = downsample(lfp.raw_lfp, fs=lfp.fs, target_fs=target_fs, lowpass_hz=lowpass_hz)
+
+    scipy.io.savemat(
+        output_path,
+        {
+            'lfp_ds': lfp_ds,
+            'fs': float(target_fs),
+            'source_fs': float(lfp.fs),
+            'subject': lfp.subject,
+            'emu_id': lfp.emu_id,
+            'task': lfp.task,
+            'channel_ids': np.asarray(lfp.chosen_channel_ids),
+            'channel_names': lfp.chosen_chan['channel_name'].to_numpy(dtype=object),
+            'regions': np.asarray(lfp.regions if lfp.regions is not None else [], dtype=object),
+        },
+    )
+    return output_path
+
+
+class LFP_processor:
+
+    def __init__(self, path_to_file, regions: list[str] = None):
+
+        # Basic info about the recording
+        self.filename = os.path.basename(path_to_file)
+        self.subject, self.emu_id, self.task = self.filename.split('_')[:3]
+
+        # Load the recording and build the channel table
+        self.recording = load_blackrock_recording(path_to_file)
+        self.all_chan = build_all_chan(self.recording)
+
+        # Load sampling frequency
+        self.fs = self.recording.sampling_frequency
+        self.num_segments = self.recording.get_num_segments()
+        self.segment_samples = [
+            self.recording.get_num_samples(segment_index=i)
+            for i in range(self.num_segments)
+        ]
+        self.segment_index = int(np.argmax(self.segment_samples))
+        self.n_samples = self.segment_samples[self.segment_index]
+        self.duration_s = self.n_samples / self.fs
+
+        # Set regions of interest
+        self.regions = regions
+        self.choose_channels(self.regions)
+
+        # Load data
+        # self.load_raw_lfp()
+        # self.load_raw_analog()
+
+    def choose_channels(self, regions):
+        """
+        Select channels by parsed brain region labels.
+
+        Example
+        -------
+        self.choose_channels(['HPC', 'ACC'])
+        """
+        if regions is None:
+            self.chosen_chan = self.all_chan[self.all_chan['region'].notnull()].copy()
+            self.chosen_channel_ids = self.chosen_chan.channel_id.tolist()
+            return self
+        
+        if isinstance(regions, str):
+            regions = [regions]
+        self.chosen_chan = self.all_chan[self.all_chan['region'].isin(regions)].copy()
+        self.chosen_channel_ids = self.chosen_chan.channel_id.tolist()
+        return self
+    
+    def load_raw_lfp(self):
+        print(' - Reading raw LFP')
+        self.raw_lfp = self.recording.get_traces(channel_ids=self.chosen_chan.channel_id.tolist())
+        print(' - Done reading raw LFP')
+        return self
+        
+
+    def load_raw_analog(self, name: list[str] = ['Audio', 'Photodiode']):
+        print(' - Reading raw analog')
+        self.raw_analog = self.recording.get_traces(channel_ids=
+            self.all_chan[self.all_chan['channel_name'].isin(name)].channel_id.tolist()
+        )
+        return self
+
+    def __repr__(self):
+        return 'LFP Processor for ' + self.filename[:-4]
+
+class LFP_QC:
+    """
+    Lightweight QC helper that depends on an LFP_processor instance.
+    """
+
+    def __init__(self,lfp,window_s=1.0,
+                 overlap_s=0.5, z_thresh=5.0, line_freq=60.0,
+                 chunk_duration_s=30.0, max_psd_chunks=12, psd_nperseg_s=4.0,
+                 down_sampled=True, new_fs=1000):
+        
+        self.lfp = lfp
+        self.window_s = window_s
+        self.overlap_s = overlap_s
+        self.z_thresh = z_thresh
+        self.line_freq = line_freq
+        self.chunk_duration_s = chunk_duration_s
+        self.max_psd_chunks = max_psd_chunks
+        self.psd_nperseg_s = psd_nperseg_s
+        self.new_fs = new_fs
+
+        # Initial empty results that will be populated by QC methods
+        self.channel_metrics = pd.DataFrame()
+        self.interval_metrics = pd.DataFrame()
+        self.bad_channel_ids = []
+        self.bad_channel_names = []
+        self.bad_intervals = pd.DataFrame(
+            columns=['start_sample', 'end_sample', 'start_time', 'end_time', 'reason']
+        )
+
+        # Downsample for QC purpose
+        if down_sampled:
+            self.is_downsampled = True
+            self.lfp_ds = downsample(self.lfp.raw_lfp, 
+                                    fs=self.lfp.fs, 
+                                    target_fs=self.new_fs, 
+                                    lowpass_hz=400)
+            
+        else:
+            self.is_downsampled = False
+            self.lfp_ds = None
+
+    @property
+    def params(self):
+
+        return {
+            'window_s': self.window_s,
+            'overlap_s': self.overlap_s,
+            'z_thresh': self.z_thresh,
+            'line_freq': self.line_freq,
+            'chunk_duration_s': self.chunk_duration_s,
+            'max_psd_chunks': self.max_psd_chunks,
+            'psd_nperseg_s': self.psd_nperseg_s,
+            'sampling_frequency': self.fs,
+        }
+    
+    @property
+    def fs(self):
+        """sampling frequency"""
+        return self.lfp.fs if not self.is_downsampled else self.new_fs
+    
+    def compute_channel_metrics(self):
+        """
+        Compute per-channel QC metrics such as RMS, variance, line noise.
+        """
+
+        n_channels = len(self.lfp.chosen_channel_ids)
+        if n_channels == 0:
+            raise ValueError('No neural channels were selected for QC.')
+
+
+
+        return self
+
+    # def compute_channel_metrics(self):
+    #     """
+    #     Compute per-channel QC metrics such as RMS, variance, line noise,
+    #     clipping fraction, and peer correlation.
+    #     """
+    #     print(' - Computing channel-level QC metrics')
+    #     fs = float(self.lfp.fs)
+    #     n_samples = int(self.lfp.n_samples)
+    #     n_channels = len(self.lfp.chosen_channel_ids)
+    #     if n_channels == 0:
+    #         raise ValueError('No neural channels were selected for QC.')
+
+    #     sum_x = np.zeros(n_channels, dtype=np.float64)
+    #     sum_x2 = np.zeros(n_channels, dtype=np.float64)
+    #     sum_abs_dev = np.zeros(n_channels, dtype=np.float64)
+    #     mins = np.full(n_channels, np.inf, dtype=np.float64)
+    #     maxs = np.full(n_channels, -np.inf, dtype=np.float64)
+    #     min_counts = np.zeros(n_channels, dtype=np.int64)
+    #     max_counts = np.zeros(n_channels, dtype=np.int64)
+    #     repeated_counts = np.zeros(n_channels, dtype=np.int64)
+    #     prev_last = None
+    #     psd_sum, freqs = None, None
+    #     psd_count = 0
+
+    #     chunk_frames = max(1, int(self.chunk_duration_s * fs))
+    #     n_chunks = max(1, int(np.ceil(n_samples / chunk_frames)))
+    #     psd_stride = max(1, int(np.ceil(n_chunks / self.max_psd_chunks)))
+
+    #     for i, (_, _, traces) in enumerate(self.iter_lfp_chunks()):
+    #         sum_x += traces.sum(axis=0, dtype=np.float64)
+    #         sum_x2 += np.sum(traces * traces, axis=0, dtype=np.float64)
+    #         mins = np.minimum(mins, traces.min(axis=0))
+    #         maxs = np.maximum(maxs, traces.max(axis=0))
+    #         if traces.shape[0] > 1:
+    #             repeated_counts += np.sum(np.diff(traces, axis=0) == 0, axis=0)
+    #         if prev_last is not None:
+    #             repeated_counts += traces[0] == prev_last
+    #         prev_last = traces[-1].copy()
+
+    #         if i % psd_stride != 0:
+    #             continue
+    #         nperseg = min(int(self.psd_nperseg_s * fs), traces.shape[0])
+    #         if nperseg < 8:
+    #             continue
+    #         freqs, psd = signal.welch(traces, fs=fs, axis=0, nperseg=nperseg)
+    #         psd_sum = psd if psd_sum is None else psd_sum + psd
+    #         psd_count += 1
+
+    #     mean = sum_x / n_samples
+    #     std = np.sqrt(np.maximum(sum_x2 / n_samples - mean ** 2, 0))
+    #     rms = np.sqrt(sum_x2 / n_samples)
+    #     peak_to_peak = maxs - mins
+
+    #     for _, _, traces in self.iter_lfp_chunks():
+    #         sum_abs_dev += np.sum(np.abs(traces - mean), axis=0, dtype=np.float64)
+    #         min_counts += np.sum(traces == mins, axis=0)
+    #         max_counts += np.sum(traces == maxs, axis=0)
+
+    #     mean_abs_dev = sum_abs_dev / n_samples
+    #     repeated_fraction = repeated_counts / max(n_samples - 1, 1)
+    #     clipping_fraction = np.maximum(min_counts, max_counts) / n_samples
+
+    #     if psd_sum is None or freqs is None or psd_count == 0:
+    #         line_noise_ratio = np.full(n_channels, np.nan)
+    #     else:
+    #         mean_psd = psd_sum / psd_count
+    #         band_mask = (freqs >= 1.0) & (freqs <= min(200.0, fs / 2.0))
+    #         line_mask = band_mask & (np.abs(freqs - self.line_freq) <= 1.0)
+    #         total_power = np.trapezoid(mean_psd[band_mask], freqs[band_mask], axis=0)
+    #         line_power = np.trapezoid(mean_psd[line_mask], freqs[line_mask], axis=0)
+    #         line_noise_ratio = np.divide(line_power, total_power, out=np.full(n_channels, np.nan), where=total_power > 0)
+
+    #     metrics = self.lfp.chosen_chan.reset_index(drop=True).copy()
+    #     metrics['n_samples'] = n_samples
+    #     metrics['duration_s'] = n_samples / fs
+    #     metrics['mean'] = mean
+    #     metrics['std'] = std
+    #     metrics['rms'] = rms
+    #     metrics['mean_abs_dev'] = mean_abs_dev
+    #     metrics['peak_to_peak'] = peak_to_peak
+    #     metrics['repeated_fraction'] = repeated_fraction
+    #     metrics['clipping_fraction'] = clipping_fraction
+    #     metrics['line_noise_ratio'] = line_noise_ratio
+
+    #     self.channel_metrics = metrics
+    #     return self
+
+    def detect_bad_channels(self):
+        """
+        Flag globally bad channels based on channel-level QC metrics.
+        """
+        return self
+
+    def compute_interval_metrics(self):
+        """
+        Compute windowed QC metrics for detecting transient bad time intervals.
+        """
+        return self
+
+    def detect_bad_intervals(self):
+        """
+        Flag bad time intervals from windowed QC metrics.
+        """
+        return self
+
+    def update_lfp_metadata(self):
+        """
+        Write compact QC results back onto the linked LFP_processor instance.
+        """
+        return self
+
+    def plot_channel_summary(self):
+        """
+        Plot summary figures for channel-level QC metrics and flags.
+        """
+        return self
+
+    def plot_interval_summary(self):
+        """
+        Plot summary figures for bad-interval detection over time.
+        """
+        return self
+
+    def plot_summary(self):
+        """
+        Convenience wrapper for generating the main QC summary figures.
+        """
+        self.plot_channel_summary()
+        self.plot_interval_summary()
+        return self
+
+    def __repr__(self):
+        return f'LFP_QC({self.lfp.filename[:-4]})'
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Preprocess one EMU session.')
+    parser.add_argument('--subject', type=str, help='Patient code, e.g. YFB.')
+    parser.add_argument('--emu-id', type=int, help='EMU id as integer, e.g. 44 for EMU-0044.')
+    parser.add_argument(
+        '--no-match-sessions',
+        action='store_true',
+        help='Skip matching against sessions.csv and resolve the NS5 path directly.',
+    )
+    parser.add_argument(
+        '--regions',
+        nargs='+',
+        default=DEFAULT_REGIONS,
+        help='Regions to keep. Default: HPC',
+    )
+    parser.add_argument(
+        '--output-mat',
+        type=str,
+        help='Optional output path for the downsampled LFP .mat file.',
+    )
+    parser.add_argument(
+        '--target-fs',
+        type=int,
+        default=1000,
+        help='Downsampled sampling rate to save. Default: 1000 Hz.',
+    )
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    if args.subject is None or args.emu_id is None:
+        raise ValueError('Please provide both --subject and --emu-id.')
+
+    if not args.no_match_sessions:
+        sessions = load_sessions()
+        session = get_session_row(args.subject, args.emu_id, sessions=sessions)
+        print(f"Loading {session['patient']} EMU-{int(session['emu_id']):04d}")
+        print(f"NS5 path: {session['ns5_path']}")
+        print(f"NS5 size (bytes): {int(session['size'])}")
+
+    else:
+        session = {
+            'patient': args.subject,
+            'emu_id': args.emu_id,
+            'ns5_path': get_ns5_path(args.subject, args.emu_id),
+        }
+        print(f"Loading {session['patient']} EMU-{int(session['emu_id']):04d}")
+        print(f"NS5 path: {session['ns5_path']}")
+
+    lfp = LFP_processor(session['ns5_path'], regions=args.regions)
+    print(lfp)
+    print(f'Chosen channels: {len(lfp.chosen_channel_ids)}')
+    print(f'Duration (s): {lfp.duration_s:.2f}')
+
+    output_path = args.output_mat or get_output_mat_path(session['ns5_path'])
+    print('Reading raw LFP and saving downsampled output')
+    save_downsampled_lfp_mat(lfp, output_path, target_fs=args.target_fs)
+    print(f'Saved downsampled LFP to {output_path}')
+
+
+if __name__ == '__main__':
+    main()
+
+
+#%% OLD SCRIPT Inspect recording segments 
+
+# # Some Blackrock files are split into multiple SpikeInterface segments.
+# # Many recording methods need an explicit segment_index in that case.
+# num_segments = recording.get_num_segments()
+# num_samples = [
+#     recording.get_num_samples(segment_index=segment_index)
+#     for segment_index in range(num_segments)
+# ]
+# segment_index = int(np.argmax(num_samples))
+
+# print(f"Using segment_index={segment_index} with {num_samples[segment_index]} samples")
+# for i, n_samples in enumerate(num_samples):
+#     t1 = recording.get_start_time(segment_index=i)
+#     t2 = recording.get_end_time(segment_index=i)
+#     print(f"segment {i}: {n_samples} samples, {t1:.4f}s to {t2:.4f}s")
+
+# SEGNUM = 0 if len(num_samples) == 1 else segment_index
+
+# # Pick one neural channel for quick trace sanity checks.
+# channel_gains = recording.get_property("gain_to_uV")
+# neural_channel_ids = channel_ids[channel_gains == 0.25]
+# rng = np.random.default_rng(0)
+# ch_id = rng.choice(neural_channel_ids)
+# ch_name = channel_names[list(channel_ids).index(ch_id)]
+# fs = recording.get_sampling_frequency()
+# trace = recording.get_traces(
+#     channel_ids=[ch_id],
+#     segment_index=SEGNUM,
+#     start_frame=0,
+#     end_frame=int(fs),  # first second only
+# ).flatten()
+# print(ch_name, ch_id, trace.shape)
+
+
+# def load_events(filepath):
+#     """
+#     loads the events object corresponding to the filepath
+#     filepath is the path to the session file (e.g., 'data/sessions/YEW_0033_pursuit.mat')
+#     """
+#     basedir = os.path.dirname(filepath)
+#     eventsdir = os.path.join(basedir, 'events')
+#     fnm = os.path.basename(filepath).replace('.mat', '_events.mat')
+#     if not os.path.exists(eventsdir):
+#         raise Exception(f'Events directory {eventsdir} does not exist. Please check the session file {filepath}.')
+#     events_file = os.path.join(eventsdir, fnm)
+#     f = scipy.io.loadmat(events_file)
+#     return f
+
+
+# def load_pursuit_trials(filepath):
+#     """
+#     example:
+#        trial_start: 73441
+#          iti_start: 73460
+#            iti_end: 74100
+#         wait_start: 74112
+#        chase_start: 75077
+#          chase_end: 77697
+#     feedback_start: 78050
+#          trial_end: 79567
+#     """
+#     try:
+#         f = load_events(filepath)
+#     except FileNotFoundError:
+#         print(f'WARNING: events file not found for {filepath}. Please check the session file.')
+#         return None, []
+#     trials = f['events_info'][0,:]
+#     # n.b. trial start includes ITI, and trial_end includes feedback period
+
+#     # make dataframe of event times
+#     event_order = ['wait_start', 'chase_start', 'chase_end', 'feedback_start', 'trial_end']
+#     event_times = {}
+#     for event_name in event_order:
+#         event_times[event_name] = np.array([x[0,0] for x in trials[event_name]])
+#     df = pd.DataFrame(event_times)
+#     event_times = list(zip(df['wait_start'].values, df['trial_end'].values))
+#     return df, event_times
