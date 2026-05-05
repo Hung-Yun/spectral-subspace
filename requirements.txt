@@ -1,0 +1,6 @@
+spikeinterface[full]>=0.102
+neo>=0.13
+probeinterface>=0.2
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
