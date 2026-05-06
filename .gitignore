@@ -9,3 +9,4 @@ data/behavior/
 data/neural/
 wheels/
 *.egg-info
+logs/

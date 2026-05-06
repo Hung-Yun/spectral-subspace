@@ -6,12 +6,9 @@ import matplotlib
 
 def _get_prefix():
     if sys.platform == 'linux':
-        return os.environ.get(
-            'SPECTRAL_SUBSPACE_PREFIX',
-            os.path.join(os.path.expanduser('~'), 'hungyun-elias', 'data'),
-        )
+        return os.path.join(os.path.expanduser('~'), 'spectral-subspace', 'data')
     elif sys.platform == 'darwin': # Data are stored on my MacBook locally. 
-        return os.environ.get('SPECTRAL_SUBSPACE_PREFIX', 'data')
+        return 'data'
     
 
 def _get_datadir(remote, prefix):
@@ -21,7 +18,7 @@ def _get_datadir(remote, prefix):
     Instead the neural folder should store the preprocessed LFP matrices.
     """
     if remote:
-        result = os.environ.get('SPECTRAL_SUBSPACE_DATADIR', "/Volumes/stitched/EMU-18112")
+        result = os.environ.get('SPECTRAL_SUBSPACE_DATADIR', "/mnt/stitched/EMU-18112")
         if not os.path.exists(result):
             raise FileNotFoundError(f"Data directory not found: {result}")
     else:

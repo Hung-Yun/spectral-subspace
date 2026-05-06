@@ -1,0 +1,15 @@
+[project]
+name = "spectral-subspace"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "matplotlib>=3.9.4",
+    "neo>=0.14.3",
+    "numpy>=2.0.2",
+    "probeinterface>=0.3.1",
+    "scipy>=1.13.1",
+    "seaborn>=0.13.2",
+    "spikeinterface[full]>=0.103.2",
+]

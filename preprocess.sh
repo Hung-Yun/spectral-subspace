@@ -9,8 +9,8 @@
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
-  echo "Usage: sbatch preprocess.slurm SUBJECT EMU_ID [REGION ...]"
-  echo "Example: sbatch preprocess.slurm YFB 44 HPC"
+  echo "Usage: sbatch preprocess.sh SUBJECT EMU_ID [REGION ...]"
+  echo "Example: sbatch preprocess.sh YFB 44 HPC"
   exit 1
 fi
 
@@ -19,27 +19,38 @@ EMU_ID="$2"
 shift 2
 
 REGION_ARGS=()
-if [ "$#" -gt 0 ]; then
-  REGION_ARGS=(--regions "$@")
-fi
+EXTRA_ARGS=()
+REGIONS=()
 
-mkdir -p logs
+for arg in "$@"; do
+  case "$arg" in
+    --no-match-sessions)
+      EXTRA_ARGS+=(--no-match-sessions)
+      ;;
+    *)
+      REGIONS+=("$arg")
+      ;;
+  esac
+done
+
+if [ "${#REGIONS[@]}" -gt 0 ]; then
+  REGION_ARGS=(--regions "${REGIONS[@]}")
+fi
 
 echo "Starting preprocess job"
 echo "Subject: ${SUBJECT}"
 echo "EMU ID: ${EMU_ID}"
-echo "Regions: ${*:-HPC}"
+echo "Regions: ${REGIONS[*]:-HPC}"
+echo "No match sessions: $([ "${#EXTRA_ARGS[@]}" -gt 0 ] && echo yes || echo no)"
 echo "Host: $(hostname)"
 echo "Job ID: ${SLURM_JOB_ID:-interactive}"
 
-# Replace this block with your cluster's environment setup.
-if [ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]; then
-  source "${HOME}/miniconda3/etc/profile.d/conda.sh"
-  conda activate spectral-subspace
-fi
-
 # Override these if the cluster sees different mount points than your laptop.
 export SPECTRAL_SUBSPACE_PREFIX="${SPECTRAL_SUBSPACE_PREFIX:-${HOME}/hungyun-elias/data}"
-export SPECTRAL_SUBSPACE_DATADIR="${SPECTRAL_SUBSPACE_DATADIR:-/path/to/stitched/EMU-18112}"
+export SPECTRAL_SUBSPACE_DATADIR="${SPECTRAL_SUBSPACE_DATADIR:-/mnt/stitched/EMU-18112}"
 
-python preprocess.py --subject "${SUBJECT}" --emu-id "${EMU_ID}" "${REGION_ARGS[@]}"
+uv run python preprocess.py \
+  --subject "${SUBJECT}" \
+  --emu-id "${EMU_ID}" \
+  "${REGION_ARGS[@]}" \
+  "${EXTRA_ARGS[@]}"
