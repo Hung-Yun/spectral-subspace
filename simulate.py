@@ -1,12 +1,12 @@
 #%%
-import os
-
-import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io
+import matplotlib.pyplot as plt
 import seaborn as sns
+from scipy import signal
 
-from preprocess import LFP_processor, get_ns5_path, get_output_mat_path
+from preprocess import LFP_processor, downsample, get_ns5_path, get_output_mat_path
+from utils import fig_set
 
 
 SUBJECT = 'YFT'
@@ -14,6 +14,18 @@ EMU_ID = 32
 REGIONS = ['HPC']
 RAW_WINDOW_S = 5
 DS_WINDOW_S = 5
+PSD_WINDOW_S = 2.0
+PSD_OVERLAP_FRAC = 0.5
+PSD_MAX_FREQ_HZ = 300
+PSD_ZOOM_FREQ_HZ = 100
+SIM_FS = 30000
+SIM_TARGET_FS = 1000
+SIM_DURATION_S = 5
+SIM_LOWPASS_HZ = 400
+
+plt.figure()
+plt.close()
+fig_set(font_size=10, linewidth=0.8)
 
 # Sanity-check raw and saved downsampled LFP for one session.
 
@@ -39,27 +51,141 @@ raw_trace = lfp.recording.get_traces(
     start_frame=0,
     end_frame=raw_end,
 ).squeeze()
-raw_time = np.arange(raw_trace.shape[0]) / lfp.fs
+raw_fs = lfp.fs
+raw_time = np.arange(raw_trace.shape[0]) / raw_fs
 
 ds_mat = scipy.io.loadmat(ds_mat_path, squeeze_me=True)
 ds_lfp = np.asarray(ds_mat['lfp_ds'])
-if ds_lfp.ndim == 1:
-    ds_trace = ds_lfp
-else:
-    ds_trace = ds_lfp[:min(int(ds_window_s * float(ds_mat['fs'])), ds_lfp.shape[0]), 0]
 ds_fs = float(ds_mat['fs'])
+ds_end = min(int(ds_window_s * ds_fs), ds_lfp.shape[0])
+if ds_lfp.ndim == 1:
+    ds_trace = ds_lfp[:ds_end]
+else:
+    ds_trace = ds_lfp[:ds_end, 0]
 ds_time = np.arange(ds_trace.shape[0]) / ds_fs
 #%%
-fig, ax = plt.subplots(1,1, figsize=(6,3), sharex=False, dpi=300)
-ax.plot(raw_time, raw_trace, lw=0.8)
+fig, ax = plt.subplots(1,1, figsize=(6,3), dpi=300)
+ax.plot(raw_time, raw_trace, lw=0.8, label='Raw')
 ax.set_xlabel('Time (s)')
 ax.set_ylabel('Amplitude')
 
-ax.plot(ds_time, ds_trace, lw=0.8, color='tab:orange')
+ax.plot(ds_time, ds_trace, lw=0.8, color='tab:orange', label='Downsampled')
 ax.set_xlabel('Time (s)')
 ax.set_ylabel('Amplitude')
+
+ax.legend(frameon=False, loc='upper right')
 fig.tight_layout()
 sns.despine(trim=False)
+plt.show()
+
+#%% PSD of the raw and downsampled traces
+
+raw_nperseg = min(int(PSD_WINDOW_S * raw_fs), raw_trace.shape[0])
+ds_nperseg = min(int(PSD_WINDOW_S * ds_fs), ds_trace.shape[0])
+raw_noverlap = int(raw_nperseg * PSD_OVERLAP_FRAC)
+ds_noverlap = int(ds_nperseg * PSD_OVERLAP_FRAC)
+
+f_raw, psd_raw = signal.welch(raw_trace,fs=raw_fs,
+    window='hann',nperseg=raw_nperseg,noverlap=raw_noverlap,
+)
+f_ds, psd_ds = signal.welch(ds_trace,fs=ds_fs,
+    window='hann',nperseg=ds_nperseg,noverlap=ds_noverlap,
+)
+
+max_freq_hz = min(PSD_MAX_FREQ_HZ, ds_fs / 2)
+zoom_freq_hz = min(PSD_ZOOM_FREQ_HZ, ds_fs / 2)
+
+#%% PSD
+
+plt.figure(figsize=(3,3), dpi=300)
+plt.plot(f_raw, psd_raw, lw=1, label=f'Raw ({lfp.fs//1000:.0f} kHz)')
+plt.plot(f_ds, psd_ds, lw=1, label=f'Downsampled ({ds_fs//1000:.0f} kHz)')
+plt.xlim([0.5, 500])
+plt.axvline(400, ls='--', c='k', lw=1, alpha=0.4)
+plt.yscale('log')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('PSD')
+plt.legend(frameon=False, loc='lower left')
+plt.tight_layout()
+sns.despine(trim=False)
+plt.show()
+
+#%% simulate a 10000 hz signal and downsample to 1000 hz, then compare the PSDs
+
+rng = np.random.default_rng(0)
+sim_time = np.arange(0, SIM_DURATION_S, 1 / SIM_FS)
+
+# Mix low-frequency structure, broadband noise, and >400 Hz content that
+# should be attenuated by the real downsampling pipeline.
+sim_trace = (
+    80 * np.sin(2 * np.pi * 8 * sim_time)
+    + 40 * np.sin(2 * np.pi * 40 * sim_time + 0.3)
+    + 20 * np.sin(2 * np.pi * 180 * sim_time + 1.1)
+    + 15 * np.sin(2 * np.pi * 350 * sim_time + 0.7)
+    + 12 * np.sin(2 * np.pi * 700 * sim_time + 0.4)
+    + 8 * rng.standard_normal(sim_time.shape[0])
+)
+
+sim_trace_ds = downsample(
+    sim_trace[:, None],
+    fs=SIM_FS,
+    target_fs=SIM_TARGET_FS,
+    lowpass_hz=SIM_LOWPASS_HZ,
+).squeeze()
+sim_time_ds = np.arange(sim_trace_ds.shape[0]) / SIM_TARGET_FS
+
+sim_raw_nperseg = min(int(PSD_WINDOW_S * SIM_FS), sim_trace.shape[0])
+sim_ds_nperseg = min(int(PSD_WINDOW_S * SIM_TARGET_FS), sim_trace_ds.shape[0])
+sim_raw_noverlap = int(sim_raw_nperseg * PSD_OVERLAP_FRAC)
+sim_ds_noverlap = int(sim_ds_nperseg * PSD_OVERLAP_FRAC)
+
+f_sim_raw, psd_sim_raw = signal.welch(
+    sim_trace,
+    fs=SIM_FS,
+    window='hann',
+    nperseg=sim_raw_nperseg,
+    noverlap=sim_raw_noverlap,
+)
+f_sim_ds, psd_sim_ds = signal.welch(
+    sim_trace_ds,
+    fs=SIM_TARGET_FS,
+    window='hann',
+    nperseg=sim_ds_nperseg,
+    noverlap=sim_ds_noverlap,
+)
+
+fig, axes = plt.subplots(1, 2, figsize=(7, 3), dpi=300)
+plot_samples_raw = int(0.1 * SIM_FS)
+plot_samples_ds = int(0.1 * SIM_TARGET_FS)
+
+axes[0].plot(sim_time[:plot_samples_raw], sim_trace[:plot_samples_raw], lw=0.8, label='Raw')
+axes[0].plot(
+    sim_time_ds[:plot_samples_ds],
+    sim_trace_ds[:plot_samples_ds],
+    lw=1,
+    color='tab:orange',
+    label='Downsampled',
+)
+axes[0].set_xlabel('Time (s)')
+axes[0].set_ylabel('Amplitude')
+axes[0].set_title('Simulated trace')
+axes[0].legend(frameon=False, loc='upper right')
+
+axes[1].plot(f_sim_raw, psd_sim_raw, lw=1, label=f'Raw ({SIM_FS // 1000} kHz)')
+axes[1].plot(f_sim_ds, psd_sim_ds, lw=1, label=f'Downsampled ({SIM_TARGET_FS} Hz)')
+axes[1].axvline(SIM_LOWPASS_HZ, ls='--', c='k', lw=1, alpha=0.4, label='Low-pass')
+axes[1].set_xlim([0.5, SIM_TARGET_FS / 2])
+axes[1].set_yscale('log')
+axes[1].set_xlabel('Frequency (Hz)')
+axes[1].set_ylabel('PSD')
+axes[1].set_title('PSD after real pipeline')
+axes[1].legend(frameon=False, loc='lower left')
+
+fig.tight_layout()
+sns.despine(trim=False)
+plt.show()
+
+
 
 
 #%%

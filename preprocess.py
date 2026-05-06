@@ -1,4 +1,4 @@
-#%% imports
+#%%
 
 import sys
 import os
@@ -8,6 +8,9 @@ import numpy as np
 import pandas as pd
 import re
 from scipy import signal
+
+from utils import _get_prefix, _get_datadir
+
 try:
     import spikeinterface as si  # import core only
     import spikeinterface.extractors as se
@@ -42,33 +45,50 @@ OVERALL PREPROCESSING PIPELINE
 9. Save preprocessed LFP matrix: channels × time.
 """
 
-if sys.platform == 'linux':
-    PREFIX = os.environ.get(
-        'SPECTRAL_SUBSPACE_PREFIX',
-        os.path.join(os.path.expanduser('~'), 'hungyun-elias', 'data'),
-    )
-elif sys.platform == 'darwin': # Data are stored on my MacBook locally. 
-    PREFIX = os.environ.get('SPECTRAL_SUBSPACE_PREFIX', 'data')
-SESSIONS_CSV = os.path.join(PREFIX, 'sessions.csv')
 
-# The local form (REMOTE=False) is temporary because ideally we don't want to store all ns5 files locally.
-# Instead the neural folder should store the preprocessed LFP matrices.
+TARGET_LABEL_TO_REGION = {'H': 'HPC','C': 'ACC','A': 'AMY','PH': 'PHG','I': 'INS','OF': 'OFC','OT': 'OTG'}
+SENSA_CHANNEL_PATTERN = re.compile(
+    r'^m(?P<hemi>[LR])'
+    r'(?P<entry>[FPOT]\d+[a-z]?)'
+    r'(?P<targets>(?:PH|OF|OT|[A-Z][a-z]?)+)'
+    r'(?P<contact>\d+)-(?P<channel>\d+)$'
+)
+
+PREFIX = _get_prefix()
 REMOTE = True
-if REMOTE:
-    DATADIR = os.environ.get('SPECTRAL_SUBSPACE_DATADIR', "/Volumes/stitched/EMU-18112")
-    if not os.path.exists(DATADIR):
-        raise FileNotFoundError(f"Data directory not found: {DATADIR}")
-else:
-    DATADIR = os.path.join(PREFIX, 'neural')
-
+SESSIONS_CSV = os.path.join(PREFIX, 'sessions.csv')
+DATADIR = _get_datadir(REMOTE, PREFIX)
 DEFAULT_REGIONS = ['HPC']
 
-def get_ns5_path(subject, emu_id):
+def load_sessions():
+    """Load the sessions table and attach NS5 metadata."""
+    sessions = pd.read_csv(SESSIONS_CSV)
+    if 'ns5_path' not in sessions.columns:
+        sessions['ns5_path'] = sessions.apply(
+            lambda row: get_ns5_path(
+                row['patient'],
+                row['emu_id'],
+                remote=REMOTE,
+                datadir=DATADIR,
+            ),
+            axis=1,
+        )
+    sessions['size'] = sessions['ns5_path'].apply(lambda p: os.path.getsize(p))
+    return sessions
+
+
+def get_ns5_path(subject, emu_id, remote=REMOTE, datadir=DATADIR):
     """Construct the expected NS5 file path for a given session."""
-    if not REMOTE: 
-        return os.path.join(DATADIR, f"{subject}_{emu_id:04d}_pursuit.ns5")
-    
-    subj_folder = os.path.join(DATADIR, subject)
+    if datadir is None:
+        if remote:
+            datadir = os.environ.get('SPECTRAL_SUBSPACE_DATADIR', "/Volumes/stitched/EMU-18112")
+        else:
+            datadir = os.path.join(PREFIX, 'neural')
+
+    if not remote:
+        return os.path.join(datadir, f"{subject}_{emu_id:04d}_pursuit.ns5")
+
+    subj_folder = os.path.join(datadir, subject)
     prefix = f"EMU-{emu_id:04d}"
     session_name = next((f for f in os.listdir(subj_folder) if f.startswith(prefix)), None)
     if session_name is None:
@@ -82,19 +102,6 @@ def get_ns5_path(subject, emu_id):
 
     return nsp2_ns5_path
 
-
-def load_sessions():
-    """Load the sessions table and attach NS5 metadata."""
-    sessions = pd.read_csv(SESSIONS_CSV)
-    if 'ns5_path' not in sessions.columns:
-        sessions['ns5_path'] = sessions.apply(
-            lambda row: get_ns5_path(row['patient'], row['emu_id']),
-            axis=1,
-        )
-    sessions['size'] = sessions['ns5_path'].apply(lambda p: os.path.getsize(p))
-    return sessions
-
-
 def get_session_row(subject, emu_id, sessions=None):
     """Return the session row for one subject/EMU pair."""
     if sessions is None:
@@ -107,26 +114,6 @@ def get_session_row(subject, emu_id, sessions=None):
     if matches.empty:
         raise ValueError(f'No session found for patient={subject}, emu_id={int(emu_id):04d}')
     return matches.iloc[0]
-
-#%% Load one recording
-
-TARGET_LABEL_TO_REGION = {
-    'H': 'HPC',
-    'C': 'ACC',
-    'A': 'AMY',
-    'PH': 'PHG',
-    'I': 'INS',
-    'OF': 'OFC',
-    'OT': 'OTG',
-}
-
-SENSA_CHANNEL_PATTERN = re.compile(
-    r'^m(?P<hemi>[LR])'
-    r'(?P<entry>[FPOT]\d+[a-z]?)'
-    r'(?P<targets>(?:PH|OF|OT|[A-Z][a-z]?)+)'
-    r'(?P<contact>\d+)-(?P<channel>\d+)$'
-)
-
 
 def parse_sensa_channel_name(channel_name):
     """
@@ -177,6 +164,7 @@ def build_all_chan(recording):
     parsed = df['channel_name'].apply(parse_sensa_channel_name)
     df = pd.concat([df, parsed], axis=1)
     return df
+
 
 def downsample(traces, fs=30000, target_fs=1000, lowpass_hz=400):
     traces_f = signal.sosfiltfilt(signal.butter(6, lowpass_hz, btype='low', fs=fs, output='sos'), traces, axis=0)
@@ -538,7 +526,12 @@ def main():
         session = {
             'patient': args.subject,
             'emu_id': args.emu_id,
-            'ns5_path': get_ns5_path(args.subject, args.emu_id),
+            'ns5_path': get_ns5_path(
+                args.subject,
+                args.emu_id,
+                remote=REMOTE,
+                datadir=DATADIR,
+            ),
         }
         print(f"Loading {session['patient']} EMU-{int(session['emu_id']):04d}")
         print(f"NS5 path: {session['ns5_path']}")
@@ -553,7 +546,7 @@ def main():
     save_downsampled_lfp_mat(lfp, output_path, target_fs=args.target_fs)
     print(f'Saved downsampled LFP to {output_path}')
 
-
+#%%
 if __name__ == '__main__':
     main()
 

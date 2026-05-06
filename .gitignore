@@ -1,0 +1,11 @@
+# Python-generated files
+__pycache__/
+*.python-version
+.DS_Store
+build/
+AGENTS.md
+dist/
+data/behavior/
+data/neural/
+wheels/
+*.egg-info
