@@ -1,4 +1,5 @@
-#%%
+#%% NOTE: Potentially change filename to downsample.py
+#%% Should also create a separate qc.py script for the LFP_QC class
 
 import sys
 import os
@@ -9,7 +10,7 @@ import pandas as pd
 import re
 from scipy import signal
 
-from utils import _get_repo_datadir, _get_rawdir
+from utils import _get_repo_datadir, _get_ns5dir
 
 try:
     import spikeinterface as si  # import core only
@@ -57,29 +58,14 @@ SENSA_CHANNEL_PATTERN = re.compile(
 REPO_DATADIR = _get_repo_datadir()
 SESSIONS_CSV = os.path.join(REPO_DATADIR, 'sessions.csv')
 OUTPUT_DIR = os.path.join(REPO_DATADIR, 'neural')
-RAWDIR = os.environ.get('SPECTRAL_SUBSPACE_RAWDIR')
+NS5DIR = os.environ.get('SPECTRAL_SUBSPACE_RAWDIR')
 DEFAULT_REGIONS = ['HPC']
 
-def load_sessions(rawdir=RAWDIR):
-    """Load the sessions table and attach NS5 metadata."""
-    sessions = pd.read_csv(SESSIONS_CSV)
-    if 'ns5_path' not in sessions.columns:
-        sessions['ns5_path'] = sessions.apply(
-            lambda row: get_ns5_path(
-                row['patient'],
-                row['emu_id'],
-                rawdir=rawdir,
-            ),
-            axis=1,
-        )
-    sessions['size'] = sessions['ns5_path'].apply(lambda p: os.path.getsize(p))
-    return sessions
 
-
-def get_ns5_path(subject, emu_id, rawdir=RAWDIR):
+def get_ns5_path(subject, emu_id, ns5dir=NS5DIR):
     """Construct the expected NS5 file path for a given session."""
-    rawdir = _get_rawdir(rawdir)
-    subj_folder = os.path.join(rawdir, subject)
+    ns5dir = _get_ns5dir(ns5dir)
+    subj_folder = os.path.join(ns5dir, subject)
     prefix = f"EMU-{emu_id:04d}"
     session_name = next((f for f in os.listdir(subj_folder) if f.startswith(prefix)), None)
     if session_name is None:
@@ -92,6 +78,22 @@ def get_ns5_path(subject, emu_id, rawdir=RAWDIR):
     nsp2_ns5_path = os.path.join(session_folder, file_name)
 
     return nsp2_ns5_path
+
+
+def load_sessions(ns5dir=NS5DIR):
+    """Load the sessions table and attach NS5 metadata."""
+    sessions = pd.read_csv(SESSIONS_CSV)
+    if 'ns5_path' not in sessions.columns:
+        sessions['ns5_path'] = sessions.apply(
+            lambda row: get_ns5_path(
+                row['patient'],
+                row['emu_id'],
+                ns5dir=ns5dir,
+            ),
+            axis=1,
+        )
+    sessions['size'] = sessions['ns5_path'].apply(lambda p: os.path.getsize(p))
+    return sessions
 
 def get_session_row(subject, emu_id, sessions=None):
     """Return the session row for one subject/EMU pair."""
@@ -163,10 +165,9 @@ def downsample(traces, fs=30000, target_fs=1000, lowpass_hz=400):
     return traces_ds
 
 
-def get_output_mat_path(ns5_path, output_dir=None):
+def get_output_mat_path(ns5_path):
     """Build the default output path for a downsampled LFP .mat file."""
-    if output_dir is None:
-        output_dir = OUTPUT_DIR
+    output_dir = os.path.join(REPO_DATADIR, 'neural')
     stem = os.path.splitext(os.path.basename(ns5_path))[0]
     return os.path.join(output_dir, f'{stem}_ds_lfp.mat')
 
@@ -498,7 +499,7 @@ def parse_args():
         help='Downsampled sampling rate to save. Default: 1000 Hz.',
     )
     parser.add_argument(
-        '--rawdir',
+        '--ns5dir',
         type=str,
         help='Optional override for the mounted raw NS5 directory.',
     )
@@ -507,13 +508,13 @@ def parse_args():
 
 def main():
     args = parse_args()
-    rawdir = _get_rawdir(args.rawdir)
+    ns5dir = _get_ns5dir(args.ns5dir)
 
     if args.subject is None or args.emu_id is None:
         raise ValueError('Please provide both --subject and --emu-id.')
 
     if not args.no_match_sessions:
-        sessions = load_sessions(rawdir=rawdir)
+        sessions = load_sessions(ns5dir=ns5dir)
         session = get_session_row(args.subject, args.emu_id, sessions=sessions)
         print(f"Loading {session['patient']} EMU-{int(session['emu_id']):04d}")
         print(f"NS5 path: {session['ns5_path']}")
@@ -526,21 +527,25 @@ def main():
             'ns5_path': get_ns5_path(
                 args.subject,
                 args.emu_id,
-                rawdir=rawdir,
+                ns5dir=ns5dir,
             ),
         }
         print(f"Loading {session['patient']} EMU-{int(session['emu_id']):04d}")
         print(f"NS5 path: {session['ns5_path']}")
 
-    lfp = LFP_processor(session['ns5_path'], regions=args.regions)
-    print(lfp)
-    print(f'Chosen channels: {len(lfp.chosen_channel_ids)}')
-    print(f'Duration (s): {lfp.duration_s:.2f}')
-
     output_path = args.output_mat or get_output_mat_path(session['ns5_path'])
-    print('Reading raw LFP and saving downsampled output')
-    save_downsampled_lfp_mat(lfp, output_path, target_fs=args.target_fs)
-    print(f'Saved downsampled LFP to {output_path}')
+    if os.path.exists(output_path):
+        print(f"Output file already exists. \n\nSkipping processing.")
+        return
+    else:   
+        lfp = LFP_processor(session['ns5_path'], regions=args.regions)
+        print(lfp)
+        print(f'Chosen channels: {len(lfp.chosen_channel_ids)}')
+        print(f'Duration (s): {lfp.duration_s:.2f}')
+
+        print('Reading raw LFP and saving downsampled output')
+        save_downsampled_lfp_mat(lfp, output_path, target_fs=args.target_fs)
+        print(f'Saved downsampled LFP to {output_path}')
 
 #%%
 if __name__ == '__main__':

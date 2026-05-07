@@ -4,7 +4,7 @@
 #SBATCH --error=logs/preprocess-%j.err
 #SBATCH --time=01:00:00
 #SBATCH --cpus-per-task=10
-#SBATCH --mem=10G
+#SBATCH --mem=32G
 
 set -euo pipefail
 
@@ -44,10 +44,6 @@ echo "Regions: ${REGIONS[*]:-HPC}"
 echo "No match sessions: $([ "${#EXTRA_ARGS[@]}" -gt 0 ] && echo yes || echo no)"
 echo "Host: $(hostname)"
 echo "Job ID: ${SLURM_JOB_ID:-interactive}"
-
-# Optional override if stitched is mounted somewhere nonstandard.
-# Otherwise preprocess.py auto-detects /Volumes/stitched/EMU-18112 or /mnt/stitched/EMU-18112.
-export SPECTRAL_SUBSPACE_RAWDIR="${SPECTRAL_SUBSPACE_RAWDIR:-/mnt/stitched/EMU-18112}"
 
 uv run python preprocess.py \
   --subject "${SUBJECT}" \
