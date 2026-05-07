@@ -44,7 +44,7 @@ if len(lfp.chosen_channel_ids) == 0:
 channel_id = lfp.chosen_channel_ids[0]
 channel_name = lfp.chosen_chan.iloc[0]['channel_name']
 
-raw_end = min(int(raw_window_s * lfp.fs), lfp.n_samples)
+raw_end = min(int(raw_window_s * lfp.fs), lfp.n_samples)//100
 raw_trace = lfp.recording.get_traces(
     channel_ids=[channel_id],
     segment_index=lfp.segment_index,
@@ -57,7 +57,7 @@ raw_time = np.arange(raw_trace.shape[0]) / raw_fs
 ds_mat = scipy.io.loadmat(ds_mat_path, squeeze_me=True)
 ds_lfp = np.asarray(ds_mat['lfp_ds'])
 ds_fs = float(ds_mat['fs'])
-ds_end = min(int(ds_window_s * ds_fs), ds_lfp.shape[0])
+ds_end = min(int(ds_window_s * ds_fs), ds_lfp.shape[0])//100
 if ds_lfp.ndim == 1:
     ds_trace = ds_lfp[:ds_end]
 else:

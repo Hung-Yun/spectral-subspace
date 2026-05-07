@@ -45,9 +45,9 @@ echo "No match sessions: $([ "${#EXTRA_ARGS[@]}" -gt 0 ] && echo yes || echo no)
 echo "Host: $(hostname)"
 echo "Job ID: ${SLURM_JOB_ID:-interactive}"
 
-# Override these if the cluster sees different mount points than your laptop.
-export SPECTRAL_SUBSPACE_PREFIX="${SPECTRAL_SUBSPACE_PREFIX:-${HOME}/hungyun-elias/data}"
-export SPECTRAL_SUBSPACE_DATADIR="${SPECTRAL_SUBSPACE_DATADIR:-/mnt/stitched/EMU-18112}"
+# Optional override if stitched is mounted somewhere nonstandard.
+# Otherwise preprocess.py auto-detects /Volumes/stitched/EMU-18112 or /mnt/stitched/EMU-18112.
+export SPECTRAL_SUBSPACE_RAWDIR="${SPECTRAL_SUBSPACE_RAWDIR:-/mnt/stitched/EMU-18112}"
 
 uv run python preprocess.py \
   --subject "${SUBJECT}" \

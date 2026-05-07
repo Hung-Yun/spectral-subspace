@@ -9,7 +9,7 @@ import pandas as pd
 import re
 from scipy import signal
 
-from utils import _get_prefix, _get_datadir
+from utils import _get_repo_datadir, _get_rawdir
 
 try:
     import spikeinterface as si  # import core only
@@ -54,13 +54,13 @@ SENSA_CHANNEL_PATTERN = re.compile(
     r'(?P<contact>\d+)-(?P<channel>\d+)$'
 )
 
-PREFIX = _get_prefix()
-REMOTE = True
-SESSIONS_CSV = os.path.join(PREFIX, 'sessions.csv')
-DATADIR = _get_datadir(REMOTE, PREFIX)
+REPO_DATADIR = _get_repo_datadir()
+SESSIONS_CSV = os.path.join(REPO_DATADIR, 'sessions.csv')
+OUTPUT_DIR = os.path.join(REPO_DATADIR, 'neural')
+RAWDIR = os.environ.get('SPECTRAL_SUBSPACE_RAWDIR')
 DEFAULT_REGIONS = ['HPC']
 
-def load_sessions():
+def load_sessions(rawdir=RAWDIR):
     """Load the sessions table and attach NS5 metadata."""
     sessions = pd.read_csv(SESSIONS_CSV)
     if 'ns5_path' not in sessions.columns:
@@ -68,8 +68,7 @@ def load_sessions():
             lambda row: get_ns5_path(
                 row['patient'],
                 row['emu_id'],
-                remote=REMOTE,
-                datadir=DATADIR,
+                rawdir=rawdir,
             ),
             axis=1,
         )
@@ -77,18 +76,10 @@ def load_sessions():
     return sessions
 
 
-def get_ns5_path(subject, emu_id, remote=REMOTE, datadir=DATADIR):
+def get_ns5_path(subject, emu_id, rawdir=RAWDIR):
     """Construct the expected NS5 file path for a given session."""
-    if datadir is None:
-        if remote:
-            datadir = os.environ.get('SPECTRAL_SUBSPACE_DATADIR', "/Volumes/stitched/EMU-18112")
-        else:
-            datadir = os.path.join(PREFIX, 'neural')
-
-    if not remote:
-        return os.path.join(datadir, f"{subject}_{emu_id:04d}_pursuit.ns5")
-
-    subj_folder = os.path.join(datadir, subject)
+    rawdir = _get_rawdir(rawdir)
+    subj_folder = os.path.join(rawdir, subject)
     prefix = f"EMU-{emu_id:04d}"
     session_name = next((f for f in os.listdir(subj_folder) if f.startswith(prefix)), None)
     if session_name is None:
@@ -175,7 +166,7 @@ def downsample(traces, fs=30000, target_fs=1000, lowpass_hz=400):
 def get_output_mat_path(ns5_path, output_dir=None):
     """Build the default output path for a downsampled LFP .mat file."""
     if output_dir is None:
-        output_dir = os.path.join(PREFIX, 'neural')
+        output_dir = OUTPUT_DIR
     stem = os.path.splitext(os.path.basename(ns5_path))[0]
     return os.path.join(output_dir, f'{stem}_ds_lfp.mat')
 
@@ -506,17 +497,23 @@ def parse_args():
         default=1000,
         help='Downsampled sampling rate to save. Default: 1000 Hz.',
     )
+    parser.add_argument(
+        '--rawdir',
+        type=str,
+        help='Optional override for the mounted raw NS5 directory.',
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    rawdir = _get_rawdir(args.rawdir)
 
     if args.subject is None or args.emu_id is None:
         raise ValueError('Please provide both --subject and --emu-id.')
 
     if not args.no_match_sessions:
-        sessions = load_sessions()
+        sessions = load_sessions(rawdir=rawdir)
         session = get_session_row(args.subject, args.emu_id, sessions=sessions)
         print(f"Loading {session['patient']} EMU-{int(session['emu_id']):04d}")
         print(f"NS5 path: {session['ns5_path']}")
@@ -529,8 +526,7 @@ def main():
             'ns5_path': get_ns5_path(
                 args.subject,
                 args.emu_id,
-                remote=REMOTE,
-                datadir=DATADIR,
+                rawdir=rawdir,
             ),
         }
         print(f"Loading {session['patient']} EMU-{int(session['emu_id']):04d}")

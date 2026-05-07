@@ -1,29 +1,45 @@
-import sys
 import os
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib
 
-def _get_prefix():
-    if sys.platform == 'linux':
-        return os.path.join(os.path.expanduser('~'), 'spectral-subspace', 'data')
-    elif sys.platform == 'darwin': # Data are stored on my MacBook locally. 
-        return 'data'
-    
+RAWDIR_CANDIDATES = (
+    "/Volumes/stitched/EMU-18112",
+    "/mnt/stitched/EMU-18112",
+)
 
-def _get_datadir(remote, prefix):
-    """
-    The local form (remote=False) is temporary because ideally 
-    we don't want to store all ns5 files locally.
-    Instead the neural folder should store the preprocessed LFP matrices.
-    """
-    if remote:
-        result = os.environ.get('SPECTRAL_SUBSPACE_DATADIR', "/mnt/stitched/EMU-18112")
-        if not os.path.exists(result):
-            raise FileNotFoundError(f"Data directory not found: {result}")
-    else:
-        result = os.path.join(prefix, 'neural')
-    return result
+
+def _get_repo_dir():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _get_repo_datadir():
+    return os.path.join(_get_repo_dir(), 'data')
+
+
+def _get_rawdir(rawdir=None):
+    candidates = []
+
+    if rawdir is not None:
+        candidates.append(rawdir)
+
+    env_rawdir = os.environ.get('SPECTRAL_SUBSPACE_RAWDIR')
+    if env_rawdir:
+        candidates.append(env_rawdir)
+
+    candidates.extend(RAWDIR_CANDIDATES)
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+
+    raise FileNotFoundError(
+        "Could not find the raw NS5 data directory. Checked: "
+        + ", ".join(candidates)
+        + ". Mount stitched locally at /Volumes/stitched/EMU-18112, "
+        + "or use /mnt/stitched/EMU-18112 on Linux/SSH, "
+        + "or set SPECTRAL_SUBSPACE_RAWDIR."
+    )
 
 
 
