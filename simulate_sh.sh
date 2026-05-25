@@ -9,8 +9,9 @@
 set -euo pipefail
 
 mkdir -p logs
-export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib"
-export XDG_CACHE_HOME="${TMPDIR:-/tmp}/xdg-cache"
+CACHE_DIR="${SLURM_SUBMIT_DIR:-$PWD}/.cache"
+export MPLCONFIGDIR="${CACHE_DIR}/matplotlib"
+export XDG_CACHE_HOME="${CACHE_DIR}/xdg"
 mkdir -p "${MPLCONFIGDIR}" "${XDG_CACHE_HOME}"
 
 N_SEEDS="${1:-10}"
@@ -24,7 +25,7 @@ echo "Output subdir: ${OUTPUT_SUBDIR}"
 echo "Host: $(hostname)"
 echo "Job ID: ${SLURM_JOB_ID:-interactive}"
 
-uv run python simulate_sh.py \
+uv run python -u simulate_sh.py \
   --n-seeds "${N_SEEDS}" \
   --sim-duration-s "${SIM_DURATION_S}" \
   --output-subdir "${OUTPUT_SUBDIR}"

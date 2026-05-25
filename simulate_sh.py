@@ -3,8 +3,11 @@ import argparse
 import csv
 import os
 
-os.environ.setdefault('MPLCONFIGDIR', os.path.join('/tmp', 'matplotlib'))
-os.environ.setdefault('XDG_CACHE_HOME', os.path.join('/tmp', 'xdg-cache'))
+print('Starting simulate_sh.py; loading analysis libraries...', flush=True)
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+os.environ.setdefault('MPLCONFIGDIR', os.path.join(SCRIPT_DIR, '.cache', 'matplotlib'))
+os.environ.setdefault('XDG_CACHE_HOME', os.path.join(SCRIPT_DIR, '.cache', 'xdg'))
 
 import matplotlib
 matplotlib.use('Agg')
@@ -255,7 +258,7 @@ def write_summary_csv(sweep_summary, smooth_windows_s, envelope_modes, save_dir)
                     summary['effective_rank_mean'],
                     summary['effective_rank_sem'],
                 ])
-    print(f'Saved: {path}')
+    print(f'Saved: {path}', flush=True)
 
 
 def parse_args():
@@ -294,14 +297,22 @@ def main():
     )
     spectrogram_kwargs = dict(fs=sim_fs, freqs_hz=spec_freqs_hz, fwhm=0.5, wavelet_window_s=1.0)
 
+    print(
+        f'Starting Python sweep: {len(smooth_windows_s)} windows x {args.n_seeds} seeds '
+        f'x {len(envelope_modes)} modes; duration={sim_duration_s:g}s, fs={sim_fs:g}Hz',
+        flush=True,
+    )
+    print(f'Output directory: {save_dir}', flush=True)
+
     sweep_summary = {
         envelope_mode: {smooth_window_s: init_summary_bucket() for smooth_window_s in smooth_windows_s}
         for envelope_mode in envelope_modes
     }
 
     for smooth_window_s in smooth_windows_s:
+        print(f'Starting smooth_window_s={smooth_window_s:g}', flush=True)
         for seed in sweep_seeds:
-            print(f'Running smooth_window_s={smooth_window_s:g}, seed={seed}')
+            print(f'  Running seed={seed}', flush=True)
             sim_kwargs_sweep = {
                 **sim_kwargs,
                 'smooth_window_s': smooth_window_s,
@@ -327,6 +338,7 @@ def main():
                 bucket['freq_corr_upper'].append(metrics['freq_corr_upper'])
 
                 del sim
+        print(f'Finished smooth_window_s={smooth_window_s:g}', flush=True)
 
     for envelope_mode in envelope_modes:
         for smooth_window_s in smooth_windows_s:
@@ -411,6 +423,7 @@ def main():
 
     axes[0, 0].legend(frameon=False, loc='upper right', fontsize=7, title='Window')
     finish_plot('smooth_window_temporal_summaries', save_dir=save_dir, savefig=args.savefig)
+    print('Finished smooth-window sensitivity analysis.', flush=True)
 
 
 if __name__ == '__main__':
