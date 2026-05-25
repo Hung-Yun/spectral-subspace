@@ -1,7 +1,5 @@
 import os
-import seaborn as sns
-import matplotlib.pyplot as plt
-import matplotlib
+from datetime import datetime
 
 NS5DIR_CANDIDATES = (
     "/Volumes/stitched/EMU-18112",
@@ -60,24 +58,34 @@ def _get_behavdir(behavdir=None):
         + "or use /mnt/projectworlds/EMU-18112 on Linux/SSH."
     )
 
-def _load_behavioral_data(behavdir=None):
-    """
-    Loop through the ns5 dir. For each mat file, check if there is a corresponding folder in the behav dir.
-    If so, make a copy to the data/behavior folder here. 
-    """
-    behavdir = _get_behavdir(behavdir)
-    ns5dir = _get_ns5dir()
+# def _load_behavioral_data(behavdir=None):
+#     """
+#     Loop through the ns5 dir. For each mat file, check if there is a corresponding folder in the behav dir.
+#     If so, make a copy to the data/behavior folder here. 
+#     """
+#     behavdir = _get_behavdir(behavdir)
+#     ns5dir = _get_ns5dir()
 
-    for filename in os.listdir(ns5dir):
+#     for filename in os.listdir(ns5dir):
 
-    if not os.path.exists(behav_data_path):
-        raise FileNotFoundError(f"Could not find behavioral data at {behav_data_path}.")
-    return pd.read_csv(behav_data_path)
+#     if not os.path.exists(behav_data_path):
+#         raise FileNotFoundError(f"Could not find behavioral data at {behav_data_path}.")
+#     return pd.read_csv(behav_data_path)
 
 
 
 LW = 0.8
+
+
+def _get_plot_modules():
+    import matplotlib
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    return matplotlib, plt, sns
+
+
 def fig_set(font_size=8, linewidth=LW):
+    matplotlib, _, sns = _get_plot_modules()
     sns.set(style="ticks", context="paper",
             font="sans-serif",
             rc={"font.size": font_size,
@@ -105,4 +113,56 @@ def fig_set(font_size=8, linewidth=LW):
                 })
     matplotlib.rcParams['pdf.fonttype'] = 42
     matplotlib.rcParams['ps.fonttype'] = 42
-    matplotlib.rcParams['backend'] = 'QtAgg'
+
+
+def save_plot(
+    filename: str,
+    save_dir: str,
+    exts=('png', 'svg'),
+    savefig=True,
+    use_date_subfolder=False,
+    include_time=False,
+    extra_folder=None,
+):
+    if not savefig:
+        return
+
+    _, plt, _ = _get_plot_modules()
+
+    if use_date_subfolder:
+        date_str = datetime.now().strftime('%Y-%m-%d' if not include_time else '%Y-%m-%d_%H-%M-%S')
+        save_dir = os.path.join(save_dir, date_str)
+
+    if extra_folder:
+        save_dir = os.path.join(save_dir, extra_folder)
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    fig = plt.gcf()
+    fig_patch_visible = fig.patch.get_visible()
+    ax_patch_visible = [ax.patch.get_visible() for ax in fig.axes]
+
+    fig.patch.set_visible(False)
+    for ax in fig.axes:
+        ax.patch.set_visible(False)
+
+    try:
+        for ext in exts:
+            path = os.path.join(save_dir, f'{filename}.{ext}')
+            plt.savefig(path, bbox_inches='tight')
+            print(f'Saved: {path}')
+    finally:
+        fig.patch.set_visible(fig_patch_visible)
+        for ax, visible in zip(fig.axes, ax_patch_visible):
+            ax.patch.set_visible(visible)
+
+
+def finish_plot(filename=None, save_dir=None, savefig=True, show=True):
+    _, plt, sns = _get_plot_modules()
+    sns.despine(trim=False)
+    plt.tight_layout()
+    if save_dir is not None and filename is not None:
+        save_plot(filename=filename, save_dir=save_dir, savefig=savefig)
+    elif show:
+        plt.show()
+    plt.close()

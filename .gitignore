@@ -10,3 +10,5 @@ data/neural/
 wheels/
 *.egg-info
 logs/
+.cache/
+.ipython/
