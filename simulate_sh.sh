@@ -3,8 +3,8 @@
 #SBATCH --output=logs/simulate_sh-%j.out
 #SBATCH --error=logs/simulate_sh-%j.err
 #SBATCH --time=04:00:00
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=64G
 
 set -euo pipefail
 

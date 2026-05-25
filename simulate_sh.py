@@ -384,7 +384,7 @@ def main():
     axes[0, 0].legend(frameon=False, loc='best', fontsize=7)
     finish_plot('smooth_window_scalar_summaries', save_dir=save_dir, savefig=args.savefig)
 
-    selected_windows_s = np.array([smooth_windows_s[0], smooth_windows_s[3], smooth_windows_s[-1]])
+    selected_windows_s = smooth_windows_s
     window_colors = plt.cm.viridis(np.linspace(0.15, 0.85, selected_windows_s.size))
 
     fig, axes = plt.subplots(2, 2, figsize=(7, 5.5), dpi=300)
