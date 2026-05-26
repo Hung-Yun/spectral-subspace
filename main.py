@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import io
 
+from spectral import get_psd, get_spectrogram
 from utils import fig_set, finish_plot
 
 plt.figure()
@@ -81,46 +82,6 @@ class ProcessedLFP:
             raise ValueError('Compute a channel spectrogram before running PCA.')
         self.pca = PCA().fit(self.spec_power.T)
         return self.pca
-
-
-def get_psd(trace, fs, window_s, overlap_frac, window='hann'):
-    from scipy import signal
-
-    nperseg = min(int(window_s * fs), trace.shape[0])
-    if nperseg < 1:
-        raise ValueError('PSD window is too short for the provided trace.')
-
-    noverlap = min(int(nperseg * overlap_frac), max(nperseg - 1, 0))
-    freqs, psd = signal.welch(trace, fs=fs, window=window, nperseg=nperseg, noverlap=noverlap, axis=0)
-    return freqs, psd
-
-
-def get_spectrogram(trace, fs, freqs_hz, fwhm=0.3, wavelet_window_s=1.0):
-    trace = np.asarray(trace, dtype=float)
-    freqs_hz = np.asarray(freqs_hz, dtype=float)
-
-    wavetime = np.arange(-wavelet_window_s, wavelet_window_s, 1 / fs)
-    gaussian = np.exp(-(4 * np.log(2) * wavetime**2) / fwhm**2)
-    wavelets = np.zeros((len(freqs_hz), len(wavetime)), dtype=complex)
-    for freq_idx, freq_hz in enumerate(freqs_hz):
-        wavelets[freq_idx] = np.exp(1j * 2 * np.pi * freq_hz * wavetime) * gaussian
-
-    data_len = trace.shape[0]
-    nconv = data_len + len(wavetime) - 1
-    halfk = int(np.floor(len(wavetime) / 2))
-    data_fft = np.fft.fft(trace, nconv)
-    tf_power = np.zeros((len(freqs_hz), data_len))
-
-    for freq_idx in range(len(freqs_hz)):
-        wavelet_fft = np.fft.fft(wavelets[freq_idx], nconv)
-        wavelet_fft /= np.max(np.abs(wavelet_fft))
-        convres = np.fft.ifft(wavelet_fft * data_fft)
-        convres = convres[halfk - 1:-halfk]
-        tf_power[freq_idx] = np.abs(convres) ** 2
-
-    tf_time = np.arange(data_len) / fs
-    return tf_time, freqs_hz, tf_power
-
 
 DATA_PATH = os.path.join(
     'data',
@@ -219,6 +180,23 @@ recording.PCA()
 cumulative_variance = np.cumsum(recording.pca.explained_variance_ratio_)
 plt.figure(figsize=(3,3), dpi=300)
 plt.plot(cumulative_variance[:30], lw=1)
+plt.xlabel('Number of PCA components')
+plt.ylabel('Cumulative variance explained')
+plt.title('PCA of spectrogram power')
+finish_plot()
+
+#%% For spec_power, shuffle the time points and run PCA again to get a null distribution of variance explained
+from sklearn.decomposition import PCA
+
+shuffled_power = recording.spec_power.copy()
+for freq_idx in range(shuffled_power.shape[0]):
+    np.random.shuffle(shuffled_power[freq_idx])
+shuffled_pca = PCA().fit(shuffled_power.T)
+null_variance = np.cumsum(shuffled_pca.explained_variance_ratio_)
+
+plt.figure(figsize=(3,3), dpi=300)
+plt.plot(cumulative_variance[:30], lw=1)
+plt.plot(null_variance[:30], lw=1, color='k')
 plt.xlabel('Number of PCA components')
 plt.ylabel('Cumulative variance explained')
 plt.title('PCA of spectrogram power')

@@ -8,9 +8,15 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+cd "${REPO_DIR}"
+mkdir -p logs
+
 if [ "$#" -lt 2 ]; then
-  echo "Usage: sbatch preprocess.sh SUBJECT EMU_ID [REGION ...]"
-  echo "Example: sbatch preprocess.sh YFB 44 HPC"
+  echo "Usage: sbatch jobs/preprocess.sh SUBJECT EMU_ID [REGION ...]"
+  echo "Example: sbatch jobs/preprocess.sh YFB 44 HPC"
   exit 1
 fi
 
@@ -44,8 +50,9 @@ echo "Regions: ${REGIONS[*]:-HPC}"
 echo "No match sessions: $([ "${#EXTRA_ARGS[@]}" -gt 0 ] && echo yes || echo no)"
 echo "Host: $(hostname)"
 echo "Job ID: ${SLURM_JOB_ID:-interactive}"
+echo "Repo dir: ${REPO_DIR}"
 
-uv run python preprocess.py \
+uv run python "${REPO_DIR}/preprocess.py" \
   --subject "${SUBJECT}" \
   --emu-id "${EMU_ID}" \
   "${REGION_ARGS[@]}" \

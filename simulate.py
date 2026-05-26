@@ -1,10 +1,17 @@
 #%%
-import numpy as np
-from utils import fig_set, finish_plot
-import fa
-from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+import numpy as np
 import seaborn as sns
+
+import fa
+from simulate_core import (
+    build_ground_truth_spectrogram,
+    mean_and_sem,
+    simulate_trace,
+    summarize_simulation,
+)
+from spectral import get_freq_cov_from_power, get_psd, get_spectrogram
+from utils import fig_set, finish_plot
 
 class FactorAnalysisResult:
     def __init__(self, fit_result: dict):
@@ -83,140 +90,6 @@ def sanity_check_raw_and_downsampled_lfp():
     plt.tight_layout()
     plt.show()
 
-def get_psd(trace, fs, window_s, overlap_frac, window='hann'):
-    from scipy import signal
-
-    nperseg = min(int(window_s * fs), trace.shape[0])
-    if nperseg < 1:
-        raise ValueError('PSD window is too short for the provided trace.')
-
-    noverlap = min(int(nperseg * overlap_frac), max(nperseg - 1, 0))
-    freqs, psd = signal.welch(trace,fs=fs,window=window,nperseg=nperseg,noverlap=noverlap)
-    return freqs, psd
-
-
-def get_spectrogram(trace, fs, freqs_hz, fwhm=0.3, wavelet_window_s=1.0):
-    trace = np.asarray(trace, dtype=float)
-    freqs_hz = np.asarray(freqs_hz, dtype=float)
-
-    wavetime = np.arange(-wavelet_window_s, wavelet_window_s, 1 / fs)
-    gaussian = np.exp(-(4 * np.log(2) * wavetime**2) / fwhm**2)
-    wavelets = np.zeros((len(freqs_hz), len(wavetime)), dtype=complex)
-    for freq_idx, freq_hz in enumerate(freqs_hz):
-        wavelets[freq_idx] = np.exp(1j * 2 * np.pi * freq_hz * wavetime) * gaussian
-
-    data_len = trace.shape[0]
-    nconv = data_len + len(wavetime) - 1
-    halfk = int(np.floor(len(wavetime) / 2))
-    data_fft = np.fft.fft(trace, nconv)
-    tf_power = np.zeros((len(freqs_hz), data_len))
-
-    for freq_idx in range(len(freqs_hz)):
-        wavelet_fft = np.fft.fft(wavelets[freq_idx], nconv)
-        wavelet_fft /= np.max(np.abs(wavelet_fft))
-        convres = np.fft.ifft(wavelet_fft * data_fft)
-        convres = convres[halfk - 1:-halfk]
-        tf_power[freq_idx] = np.abs(convres) ** 2
-
-    tf_time = np.arange(data_len) / fs
-    return tf_time, freqs_hz, tf_power
-
-
-def get_freq_cov_from_power(power_by_freq_time, z_scored=True, eps=1e-12):
-    power_by_freq_time = np.log(power_by_freq_time + eps)
-    power_mean = power_by_freq_time.mean(axis=1, keepdims=True)
-    power_std = power_by_freq_time.std(axis=1, keepdims=True)
-    variable_rows = (power_std.squeeze() > 0)
-    power_std[power_std == 0] = 1
-
-    if z_scored:
-        z_power = (power_by_freq_time - power_mean) / power_std
-        freq_corr = np.zeros((z_power.shape[0], z_power.shape[0]), dtype=float)
-        if np.any(variable_rows):
-            if np.sum(variable_rows) == 1:
-                freq_corr[np.ix_(variable_rows, variable_rows)] = 1.0
-            else:
-                freq_corr[np.ix_(variable_rows, variable_rows)] = np.corrcoef(z_power[variable_rows])
-        return z_power, freq_corr
-    else: # just compute freq_corr
-        freq_corr = np.zeros((power_by_freq_time.shape[0], power_by_freq_time.shape[0]), dtype=float)
-        if np.any(variable_rows):
-            if np.sum(variable_rows) == 1:
-                freq_corr[np.ix_(variable_rows, variable_rows)] = 1.0
-            else:
-                freq_corr[np.ix_(variable_rows, variable_rows)] = np.corrcoef(power_by_freq_time[variable_rows])
-        return None, freq_corr
-
-
-def simulate_trace(sim_time,rng,freqs_hz,base_amplitudes,phases_rad,envelope_mode,
-                   envelope_scales,smooth_window_s,additive_noise_sd=0,):
-    freqs_hz = np.asarray(freqs_hz, dtype=float)
-    base_amplitudes = np.asarray(base_amplitudes, dtype=float)
-    phases_rad = np.asarray(phases_rad, dtype=float)
-    envelope_scales = np.asarray(envelope_scales, dtype=float)
-
-    def build_smooth_noise(sim_time, rng, scale, smooth_window_s):
-        if scale == 0:
-            return np.zeros(sim_time.shape[0])
-
-        dt = sim_time[1] - sim_time[0]
-        n_samples = sim_time.shape[0]
-        noise = rng.standard_normal(sim_time.shape[0])
-        smooth_window_samples = max(int(round(smooth_window_s / dt)), 1)
-        kernel = np.ones(smooth_window_samples, dtype=float)
-        kernel /= kernel.sum()
-        pad = smooth_window_samples // 2
-        noise_pad = np.pad(noise, pad_width=pad, mode='wrap')
-        smooth_noise = np.convolve(noise_pad, kernel, mode='valid')
-        smooth_noise = smooth_noise[:n_samples]
-        smooth_noise -= smooth_noise.mean()
-
-        noise_std = smooth_noise.std()
-        if noise_std > 0:
-            smooth_noise /= noise_std
-
-        return scale * smooth_noise
-
-    if len({arr.shape for arr in (freqs_hz, base_amplitudes, phases_rad, envelope_scales)}) != 1:
-        raise ValueError('All per-frequency parameter arrays must have the same shape.')
-
-    envelopes = np.repeat(base_amplitudes[:, None], sim_time.shape[0], axis=1)
-    if envelope_mode not in {'constant', 'ind', 'shared'}:
-        raise ValueError("envelope_mode must be 'constant', 'ind', or 'shared'.")
-
-    if envelope_mode != 'constant':
-        if envelope_mode == 'ind':
-            for freq_idx, scale in enumerate(envelope_scales):
-                envelopes[freq_idx] += build_smooth_noise(sim_time, rng, scale, smooth_window_s)
-        else:
-            shared_noise = build_smooth_noise(sim_time, rng, scale=1, smooth_window_s=smooth_window_s)
-            envelopes += envelope_scales[:, None] * shared_noise[None, :]
-
-    envelopes = np.clip(envelopes, a_min=0, a_max=None)
-    carriers = np.sin(2 * np.pi * freqs_hz[:, None] * sim_time[None, :] + phases_rad[:, None])
-    sim_trace = np.sum(envelopes * carriers, axis=0)
-    if additive_noise_sd > 0:
-        sim_trace += additive_noise_sd * rng.standard_normal(sim_time.shape[0])
-    return sim_trace, envelopes, carriers
-
-
-def build_ground_truth_spectrogram(spec_freqs_hz, active_freqs_hz, envelopes):
-    spec_freqs_hz = np.asarray(spec_freqs_hz, dtype=float)
-    active_freqs_hz = np.asarray(active_freqs_hz, dtype=float)
-    envelopes = np.asarray(envelopes, dtype=float)
-
-    if active_freqs_hz.shape[0] != envelopes.shape[0]:
-        raise ValueError('active_freqs_hz and envelopes must have the same number of rows.')
-
-    power_by_freq_time = np.zeros((spec_freqs_hz.shape[0], envelopes.shape[1]), dtype=float)
-    for freq_idx, freq_hz in enumerate(active_freqs_hz):
-        match_idx = np.where(np.isclose(spec_freqs_hz, freq_hz))[0]
-        if match_idx.size != 1:
-            raise ValueError(f'Expected exactly one matching spectrogram bin for {freq_hz} Hz.')
-        power_by_freq_time[match_idx[0]] = envelopes[freq_idx] ** 2
-
-    return power_by_freq_time
-
 plt.figure()
 plt.close()
 fig_set(font_size=10, linewidth=0.8)
@@ -256,72 +129,6 @@ class SimulationResult:
 
     def __repr__(self):
         return f'{self.envelope_mode} envelope'
-
-def get_autocorr(trace, max_lag_samples):
-    from scipy import signal
-
-    trace = np.asarray(trace, dtype=float)
-    trace = trace - trace.mean()
-    if np.allclose(trace, 0):
-        return np.zeros(max_lag_samples + 1, dtype=float)
-
-    full_corr = signal.correlate(trace, trace, mode='full')
-    acf = full_corr[trace.shape[0] - 1:trace.shape[0] + max_lag_samples]
-    return acf / acf[0]
-
-
-def participation_ratio(values):
-    values = np.asarray(values, dtype=float)
-    values = values[values > 0]
-    if values.size == 0:
-        return np.nan
-    return values.sum() ** 2 / np.sum(values ** 2)
-
-
-def summarize_simulation(sim, n_summary_freqs=3, acf_max_lag_s=60, fluct_psd_window_s=20):
-    log_power = np.log(sim.spec_power + 1e-12)
-    fs = 1 / np.median(np.diff(sim.spec_time))
-    summary_freq_idx = np.argsort(log_power.mean(axis=1))[-n_summary_freqs:]
-    summary_freq_idx = np.sort(summary_freq_idx)
-    summary_freqs_hz = sim.spec_freqs_hz[summary_freq_idx]
-
-    acf_max_lag_samples = min(int(round(acf_max_lag_s * fs)), log_power.shape[1] - 1)
-    acf_by_freq = np.vstack([get_autocorr(log_power[freq_idx], acf_max_lag_samples) for freq_idx in summary_freq_idx])
-    mean_acf = acf_by_freq.mean(axis=0)
-    acf_lags_s = np.arange(mean_acf.shape[0]) / fs
-    decay_idx = np.where(mean_acf < np.exp(-1))[0]
-    acf_decay_s = acf_lags_s[decay_idx[0]] if decay_idx.size else np.nan
-
-    mean_log_power = log_power[summary_freq_idx].mean(axis=0)
-    fluct_psd_f, fluct_psd = get_psd(mean_log_power, fs=fs, window_s=fluct_psd_window_s, overlap_frac=0.5)
-
-    pca_cumulative = np.cumsum(sim.pca.explained_variance_ratio_)
-    freq_corr_upper = sim.freq_corr[np.triu_indices_from(sim.freq_corr, k=1)]
-
-    return dict(summary_freq_idx=summary_freq_idx,
-                summary_freqs_hz=summary_freqs_hz,
-                acf_lags_s=acf_lags_s,
-                mean_acf=mean_acf,
-                acf_decay_s=acf_decay_s,
-                fluct_psd_f=fluct_psd_f,
-                fluct_psd=fluct_psd,
-                pc1_var_explained=sim.pca.explained_variance_ratio_[0],
-                n_pcs_95=np.searchsorted(pca_cumulative, 0.95) + 1,
-                effective_rank=participation_ratio(sim.pca.explained_variance_),
-                freq_corr_upper=freq_corr_upper,)
-
-
-def mean_and_sem(values):
-    values = np.asarray(values, dtype=float)
-    valid = np.isfinite(values)
-    if not np.any(valid):
-        return np.nan, np.nan
-    mean = np.nanmean(values)
-    if np.sum(valid) == 1:
-        return mean, 0.0
-    sem = np.nanstd(values, ddof=1) / np.sqrt(np.sum(valid))
-    return mean, sem
-
 #%%
 # General simulation parameters
 SIM_FS = 500
@@ -527,7 +334,6 @@ for envelope_mode in SWEEP_ENVELOPE_MODES:
             acf_decay_s=acf_decay_s,
             acf_decay_s_mean=acf_decay_s_mean,
             acf_decay_s_sem=acf_decay_s_sem,
-            fluct_psd_f=sim_list[0].summary_metrics['fluct_psd_f'],
             pc1_var_explained=pc1_var_explained,
             pc1_var_explained_mean=pc1_var_explained_mean,
             pc1_var_explained_sem=pc1_var_explained_sem,
@@ -539,7 +345,6 @@ for envelope_mode in SWEEP_ENVELOPE_MODES:
             effective_rank_sem=effective_rank_sem,
             summary_freqs_hz=np.vstack([sim.summary_metrics['summary_freqs_hz'] for sim in sim_list]),
             mean_acf=np.vstack([sim.summary_metrics['mean_acf'] for sim in sim_list]),
-            fluct_psd=np.vstack([sim.summary_metrics['fluct_psd'] for sim in sim_list]),
             freq_corr_upper=np.vstack([sim.summary_metrics['freq_corr_upper'] for sim in sim_list]),
         )
 
@@ -569,18 +374,12 @@ finish_plot()
 selected_windows_s = np.array([SWEEP_SMOOTH_WINDOWS_S[0], SWEEP_SMOOTH_WINDOWS_S[3], SWEEP_SMOOTH_WINDOWS_S[-1]])
 window_colors = plt.cm.viridis(np.linspace(0.15, 0.85, selected_windows_s.size))
 
-fig, axes = plt.subplots(2, 2, figsize=(7, 5.5), dpi=300)
+fig, axes = plt.subplots(2, 1, figsize=(4, 5.5), dpi=300)
 for row_idx, envelope_mode in enumerate(SWEEP_ENVELOPE_MODES):
-    ax_acf = axes[row_idx, 0]
-    ax_psd = axes[row_idx, 1]
+    ax_acf = axes[row_idx]
     for color, smooth_window_s in zip(window_colors, selected_windows_s):
         summary = sweep_summary[envelope_mode][smooth_window_s]
         ax_acf.plot(summary['acf_lags_s'], summary['mean_acf'].mean(axis=0), lw=1,
-                    color=color, label=f'{smooth_window_s:g} s')
-
-        mean_fluct_psd = summary['fluct_psd'].mean(axis=0)
-        psd_mask = summary['fluct_psd_f'] <= 2
-        ax_psd.plot(summary['fluct_psd_f'][psd_mask], mean_fluct_psd[psd_mask], lw=1,
                     color=color, label=f'{smooth_window_s:g} s')
 
     ax_acf.set_xlim([0, 60])
@@ -588,12 +387,7 @@ for row_idx, envelope_mode in enumerate(SWEEP_ENVELOPE_MODES):
     ax_acf.set_xlabel('Lag (s)')
     ax_acf.set_ylabel(f'{envelope_mode} mean ACF')
 
-    ax_psd.set_xlabel('Fluctuation frequency (Hz)')
-    ax_psd.set_ylabel(f'{envelope_mode} fluctuation PSD')
-    ax_psd.set_yscale('log')
-    ax_psd.set_xlim([0, 2])
-
-axes[0, 0].legend(frameon=False, loc='upper right', fontsize=7, title='Window')
+axes[0].legend(frameon=False, loc='upper right', fontsize=7, title='Window')
 finish_plot()
 
 # %%
