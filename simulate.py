@@ -2,6 +2,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+from sklearn.decomposition import PCA
 
 import fa
 from simulate_core import (
@@ -111,30 +112,86 @@ class SimulationResult:
             active_freqs_hz=sim_kwargs['freqs_hz'],
             envelopes=self.envelopes,
         )
+        self.spec_power_demean = self.spec_power - self.spec_power.mean(axis=1, keepdims=True)
         self.z_power, self.freq_corr = get_freq_cov_from_power(self.spec_power)
         self.truth_z_power, self.truth_freq_corr = get_freq_cov_from_power(self.truth_power)
+        self.demean_power, self.demean_freq_corr = get_freq_cov_from_power(self.spec_power_demean, z_scored=False)
 
     def PCA(self):
-        from sklearn.decomposition import PCA
-
         self.pca = PCA().fit(self.spec_power.T)
-        self.truth_pca = PCA().fit(self.truth_power.T)
+        self.pca_truth = PCA().fit(self.truth_power.T)
+        self.pca_demean = PCA().fit(self.spec_power_demean.T)
         self.z_pca = PCA().fit(self.z_power.T)
 
     def FA(self, shared_var_thresh=0.95):
-        import fa
-
         self.fa = FactorAnalysisResult(fa.fa_fit(self.spec_power.T, shared_var_thresh=shared_var_thresh))
         self.z_fa = FactorAnalysisResult(fa.fa_fit(self.z_power.T, shared_var_thresh=shared_var_thresh))
 
     def __repr__(self):
         return f'{self.envelope_mode} envelope'
-#%%
-# General simulation parameters
+
+def get_wavelet_frequency_responses(fs, freqs_hz, fwhm, wavelet_window_s, response='power', n_fft=None):
+    freqs_hz = np.asarray(freqs_hz, dtype=float)
+    wavetime = np.arange(-wavelet_window_s, wavelet_window_s, 1 / fs)
+    gaussian = np.exp(-(4 * np.log(2) * wavetime**2) / fwhm**2)
+    if n_fft is None:
+        n_fft = 2 ** int(np.ceil(np.log2(wavetime.size * 16)))
+
+    fft_freqs = np.fft.fftfreq(n_fft, d=1 / fs)
+    keep = fft_freqs >= 0
+    response_by_wavelet = np.zeros((freqs_hz.size, np.sum(keep)), dtype=float)
+
+    for freq_idx, freq_hz in enumerate(freqs_hz):
+        wavelet = np.exp(1j * 2 * np.pi * freq_hz * wavetime) * gaussian
+        wavelet_fft = np.abs(np.fft.fft(wavelet, n_fft))[keep]
+        wavelet_fft /= wavelet_fft.max()
+        if response == 'power':
+            wavelet_fft = wavelet_fft ** 2
+        response_by_wavelet[freq_idx] = wavelet_fft
+
+    return fft_freqs[keep], response_by_wavelet
+
+
+def max_off_center_response(response_freqs_hz, response_by_wavelet, center_freqs_hz):
+    overlap = np.zeros((center_freqs_hz.size, center_freqs_hz.size), dtype=float)
+    for wavelet_idx in range(center_freqs_hz.size):
+        overlap[wavelet_idx] = np.interp(center_freqs_hz, response_freqs_hz, response_by_wavelet[wavelet_idx])
+    np.fill_diagonal(overlap, 0)
+    return overlap.max()
+
+def plot_wavelet_frequency_responses(freqs_hz, fs, fwhm, wavelet_window_s, max_hz=5, response='power'):
+    response_freqs_hz, response_by_wavelet = get_wavelet_frequency_responses(
+        fs=fs,
+        freqs_hz=freqs_hz,
+        fwhm=fwhm,
+        wavelet_window_s=wavelet_window_s,
+        response=response,
+    )
+    max_overlap = max_off_center_response(response_freqs_hz, response_by_wavelet, np.asarray(freqs_hz, dtype=float))
+    keep = response_freqs_hz <= max_hz
+
+    plt.figure(figsize=(4.5, 3), dpi=300)
+    for response_idx in range(response_by_wavelet.shape[0]):
+        plt.plot(response_freqs_hz[keep], response_by_wavelet[response_idx, keep], lw=1)
+    plt.axhline(0.01, color='k', ls='--', lw=1, alpha=0.5, label='1% response')
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel(f'Normalized {response} response')
+    plt.title(f'FWHM={fwhm:g}s, window=+/-{wavelet_window_s:g}s, max overlap={max_overlap:.3g}')
+    plt.legend(frameon=False, loc='upper right', fontsize=7)
+    finish_plot()
+    return response_freqs_hz, response_by_wavelet, max_overlap
+
+def pca_rank_reconstruction(pca, features_by_time, rank):
+    rank = min(rank, pca.components_.shape[0])
+    scores = pca.transform(features_by_time)
+    return scores[:, :rank] @ pca.components_[:rank, :] + pca.mean_
+
+#%% General simulation parameters
 SIM_FS = 500
-SIM_DURATION_S = 600
+SIM_DURATION_S = 150
 SIM_TIME = np.arange(0, SIM_DURATION_S, 1 / SIM_FS)
 SIM_FREQS_HZ = np.array([12, 30, 70], dtype=float)
+SMOOTH_WINDOW_S = 10.0
  
 # PSD parameters
 PSD_WINDOW_S = 1.0
@@ -146,7 +203,7 @@ WAVELET_WINDOW_S = 1.0
 SPEC_FREQS_HZ = np.arange(1, 101, dtype=float)
 STP = max(int(round(SIM_FS / 200)), 1)
 
-sim_kwargs = dict(sim_time=SIM_TIME,rng=np.random.default_rng(0),freqs_hz=SIM_FREQS_HZ,smooth_window_s=10,
+sim_kwargs = dict(sim_time=SIM_TIME,rng=np.random.default_rng(0),freqs_hz=SIM_FREQS_HZ,smooth_window_s=SMOOTH_WINDOW_S,
                   base_amplitudes=np.array([30, 28, 25], dtype=float),
                   phases_rad=np.array([0.0, 0.6, 1.1], dtype=float),
                   envelope_scales=np.array([12, 8, 4], dtype=float),)
@@ -193,6 +250,8 @@ for sim in simulations:
     plt.title(f'{sim} log power')
     finish_plot()
 
+#%% Spectrograms where wavelets are definitely not overlapping
+
 #%% Ground truth spectrograms
 for sim in simulations:
     ix = np.max(np.where(sim.spec_freqs_hz <= 100))
@@ -208,7 +267,7 @@ for sim in simulations:
 for sim in simulations:
     ix = np.max(np.where(sim.spec_freqs_hz <= 100))
     plt.figure(figsize=(3, 3), dpi=300)
-    plt.imshow(sim.freq_corr[:ix, :ix],aspect='auto',origin='lower',
+    plt.imshow(sim.demean_freq_corr[:ix, :ix],aspect='auto',origin='lower',
                extent=[sim.spec_freqs_hz[0], sim.spec_freqs_hz[ix], sim.spec_freqs_hz[0], sim.spec_freqs_hz[ix]],
                cmap='coolwarm',vmin=-1,vmax=1)
     plt.colorbar()
@@ -216,7 +275,6 @@ for sim in simulations:
     plt.ylabel('Frequency (Hz)')
     plt.title(sim)
     finish_plot()
-
 #%% Ground truth frequency correlation matrices
 for sim in simulations:
     ix = np.max(np.where(sim.spec_freqs_hz <= 100))
@@ -236,8 +294,8 @@ plt.figure(figsize=(3, 3), dpi=300)
 for sim in simulations:
     dims = np.where(np.cumsum(sim.pca.explained_variance_ratio_) >= 0.99)[0][0]+1
     plt.plot(np.cumsum(sim.pca.explained_variance_ratio_), lw=1, label=f'{sim} ({dims} PCs)')
-    dims = np.where(np.cumsum(sim.truth_pca.explained_variance_ratio_) >= 0.99)[0][0]+1
-    plt.plot(np.cumsum(sim.truth_pca.explained_variance_ratio_), lw=1, ls='--', label=f'{sim} truth, ({dims} PCs)')
+    dims = np.where(np.cumsum(sim.pca_truth.explained_variance_ratio_) >= 0.99)[0][0]+1
+    plt.plot(np.cumsum(sim.pca_truth.explained_variance_ratio_), lw=1, ls='--', label=f'{sim} truth, ({dims} PCs)')
 plt.xlabel('Number of PCs')
 plt.ylabel('Cumulative Explained Variance')
 plt.legend(fontsize=6, frameon=False, loc='lower right')
@@ -258,7 +316,7 @@ for sim in simulations:
 
 ix = 0 # Which latent component to inspect
 sim = shared_noise
-pca_proj = sim.z_pca.transform(sim.z_power.T)[:, ix]
+pca_proj = sim.pca_demean.transform(sim.spec_power_demean.T)[:, ix]
 fa_proj, _ = fa.fa_transform(sim.z_power.T, sim.z_fa.fa)
 fa_proj = fa_proj[:, ix]
 envelope = sim.envelopes[0]
@@ -306,7 +364,7 @@ for smooth_window_s in SWEEP_SMOOTH_WINDOWS_S:
             sim.PCA()
             sweep_simulations[envelope_mode][smooth_window_s].append(sim)
 
-#%%
+
 # Smooth-window sensitivity: summary metrics
 for sims_by_window in sweep_simulations.values():
     for sim_list in sims_by_window.values():
@@ -370,24 +428,73 @@ for ax, (metric_key, ylabel) in zip(axes.flat, metric_specs):
 axes[0, 0].legend(frameon=False, loc='best', fontsize=7)
 finish_plot()
 
-#%% Smooth-window sensitivity: temporal summaries
-selected_windows_s = np.array([SWEEP_SMOOTH_WINDOWS_S[0], SWEEP_SMOOTH_WINDOWS_S[3], SWEEP_SMOOTH_WINDOWS_S[-1]])
-window_colors = plt.cm.viridis(np.linspace(0.15, 0.85, selected_windows_s.size))
 
-fig, axes = plt.subplots(2, 1, figsize=(4, 5.5), dpi=300)
-for row_idx, envelope_mode in enumerate(SWEEP_ENVELOPE_MODES):
-    ax_acf = axes[row_idx]
-    for color, smooth_window_s in zip(window_colors, selected_windows_s):
-        summary = sweep_summary[envelope_mode][smooth_window_s]
-        ax_acf.plot(summary['acf_lags_s'], summary['mean_acf'].mean(axis=0), lw=1,
-                    color=color, label=f'{smooth_window_s:g} s')
+#%% Rank-N Reconstruction Diagnostics
 
-    ax_acf.set_xlim([0, 60])
-    ax_acf.set_ylim([-0.1, 1.02])
-    ax_acf.set_xlabel('Lag (s)')
-    ax_acf.set_ylabel(f'{envelope_mode} mean ACF')
 
-axes[0].legend(frameon=False, loc='upper right', fontsize=7, title='Window')
+RANKS = [1, 3, 5, 7, 9]
+
+for sim in simulations:
+    if not hasattr(sim, 'z_pca'):
+        sim.z_pca = PCA().fit(sim.z_power.T)
+    sim.rank_spectrogram_error = []
+    sim.rank_freq_corr_error = []
+    sim.rank_freq_corr_similarity = []
+    sim.rank_recon_z_power = {}
+    sim.rank_recon_freq_corr = {}
+
+    for rank in RANKS:
+        recon_z_power = pca_rank_reconstruction(sim.z_pca, sim.z_power.T, rank).T
+        recon_freq_corr = np.cov(recon_z_power)
+
+        sim.rank_recon_z_power[rank] = recon_z_power
+        sim.rank_recon_freq_corr[rank] = recon_freq_corr
+
+#%% Reconstructed Frequency Correlation Matrices
+
+NONOVERLAP_FWHM = 3
+NONOVERLAP_WAVELET_WINDOW_S = 5
+NONOVERLAP_SPEC_FREQS_HZ = np.arange(1, 6, dtype=float)
+
+plot_wavelet_frequency_responses(freqs_hz=NONOVERLAP_SPEC_FREQS_HZ, fs=SIM_FS, fwhm=NONOVERLAP_FWHM, wavelet_window_s=NONOVERLAP_WAVELET_WINDOW_S, max_hz=5,)
+
+nonoverlap_spectrogram_kwargs = dict(fs=SIM_FS,freqs_hz=np.arange(1,101,dtype=float),fwhm=NONOVERLAP_FWHM,wavelet_window_s=NONOVERLAP_WAVELET_WINDOW_S,)
+for sim in simulations:
+    spec_time, spec_freqs_hz, spec_power = get_spectrogram(sim.trace, **nonoverlap_spectrogram_kwargs)
+    freq_corr = np.cov(spec_power.T)
+
+    plt.figure(figsize=(3, 3), dpi=300)
+    plt.imshow(freq_corr,aspect='auto',origin='lower',
+        extent=[spec_freqs_hz[0], spec_freqs_hz[-1], spec_freqs_hz[0], spec_freqs_hz[-1]],
+        cmap='Blues',
+        # vmin=-1,
+        # vmax=1,
+    )
+    plt.colorbar()
+    plt.xlabel('Frequency (Hz)')
+    plt.ylabel('Frequency (Hz)')
+    plt.title(f'{sim} freq corr')
+    finish_plot()
+
+
+plt.figure(figsize=(15, 3), dpi=300)
+for i, rank in enumerate([1, 3, 5, 7, 9]):
+    pca = PCA().fit(np.log(spec_power.T + 1e-12))
+
+    recon_z_power = pca_rank_reconstruction(pca, spec_power.T, rank).T
+    recon_freq_corr = np.cov(recon_z_power)
+    plt.subplot(1, 5, i + 1)
+    plt.imshow( recon_freq_corr, aspect='auto', origin='lower',
+        extent=[sim.spec_freqs_hz[0], sim.spec_freqs_hz[-1], sim.spec_freqs_hz[0], sim.spec_freqs_hz[-1]],
+        cmap='coolwarm',
+        # vmin=-1,
+        # vmax=1,
+    )
+    plt.colorbar()
+    plt.xlabel('Frequency (Hz)')
+    plt.title(f'Rank {rank}')
+plt.ylabel('Frequency (Hz)')
+plt.suptitle(f'{sim} rank-N recon freq corr', y=1.02)
 finish_plot()
 
 # %%

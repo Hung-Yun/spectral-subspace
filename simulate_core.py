@@ -1,7 +1,7 @@
 import numpy as np
 
 from spectral import get_autocorr
-
+from scipy import signal
 
 def simulate_trace(sim_time, rng, freqs_hz, base_amplitudes, phases_rad, envelope_mode,
                    envelope_scales, smooth_window_s, additive_noise_sd=0):
@@ -29,6 +29,9 @@ def simulate_trace(sim_time, rng, freqs_hz, base_amplitudes, phases_rad, envelop
         noise_std = smooth_noise.std()
         if noise_std > 0:
             smooth_noise /= noise_std
+
+        # sos = signal.butter(5, 0.1, btype='lowpass', fs=100, output='sos')
+        # smooth_noise = signal.sosfiltfilt(sos, smooth_noise)
 
         return scale * smooth_noise
 

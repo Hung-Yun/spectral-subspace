@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import io
 
-from spectral import get_psd, get_spectrogram
+from spectral import get_freq_cov_from_power, get_psd, get_spectrogram
 from utils import fig_set, finish_plot
 
 plt.figure()
@@ -28,6 +28,7 @@ class ProcessedLFP:
         self.spec_time = None
         self.spec_freqs_hz = None
         self.spec_power = None
+        self.spec_trace = None
         self.spec_channel_idx = None
 
     def summary(self):
@@ -66,9 +67,9 @@ class ProcessedLFP:
         if start < 0 or start >= stop:
             raise ValueError('Requested spectrogram window is outside the recording.')
 
-        trace = self.traces[start:stop, self.spec_channel_idx]
+        self.spec_trace = self.traces[start:stop, self.spec_channel_idx]
         self.spec_time, self.spec_freqs_hz, self.spec_power = get_spectrogram(
-            trace,
+            self.spec_trace,
             fs=self.fs,
             **spectrogram_kwargs,
         )
@@ -82,6 +83,58 @@ class ProcessedLFP:
             raise ValueError('Compute a channel spectrogram before running PCA.')
         self.pca = PCA().fit(self.spec_power.T)
         return self.pca
+    
+    def plot_lfp_traces(self, start_s, dur_s, n_channels=5):
+                
+        time = np.arange(self.traces.shape[0]) / self.fs
+        channel_sd = np.nanstd(self.traces, axis=0)
+        channel_names = self.channel_names[:n_channels]
+        preview_traces = self.traces[:int(dur_s * self.fs), :n_channels]
+        fs = preview_traces.shape[0] / dur_s
+
+        start = int(start_s * fs)
+        stop = int((start_s + dur_s) * fs)
+        offset = 4 * np.nanmedian(channel_sd[:n_channels])
+
+        plt.figure(figsize=(3,3), dpi=300)
+        for channel_idx in range(n_channels):
+            plt.plot(
+                time[start:stop],
+                preview_traces[start:stop, channel_idx] + channel_idx * offset,
+                lw=0.6,
+                label=channel_names[channel_idx],
+            )
+        plt.xlabel('Time (s)')
+        plt.ylabel('Amplitude + offset')
+        plt.title('LFP traces (preview)')
+        plt.legend(frameon=False, loc='best', fontsize=5)
+        finish_plot()
+
+    def plot_psd(self, window_s, overlap_frac, max_hz=100):
+        self.compute_psd(window_s=window_s, overlap_frac=overlap_frac)
+        mask = self.psd_f <= max_hz
+        plt.figure(figsize=(3,3), dpi=300)
+        for channel_idx in range(self.traces.shape[1]):
+            plt.plot(self.psd_f[mask], self.psd[mask, channel_idx], lw=0.7, alpha=0.85,
+                     color=plt.cm.viridis(channel_idx / self.traces.shape[1]))
+        plt.yscale('log')
+        plt.xlabel('Frequency (Hz)')
+        plt.ylabel('PSD')
+        finish_plot()
+
+def phase_randomize_trace(trace, rng):
+    """Preserve trace PSD while randomizing temporal phase structure."""
+    centered = np.asarray(trace, dtype=float) - np.mean(trace)
+    trace_fft = np.fft.rfft(centered)
+    randomized_fft = trace_fft.copy()
+
+    # DC and, for even-length traces, Nyquist must remain real-valued.
+    randomizable = slice(1, -1 if centered.size % 2 == 0 else None)
+    randomized_fft[randomizable] = np.abs(trace_fft[randomizable]) * np.exp(
+        1j * rng.uniform(-np.pi, np.pi, randomized_fft[randomizable].size)
+    )
+    return np.fft.irfft(randomized_fft, n=centered.size) + np.mean(trace)
+
 
 DATA_PATH = os.path.join(
     'data',
@@ -93,68 +146,21 @@ mat = io.loadmat(DATA_PATH, squeeze_me=True, struct_as_record=False)
 data = {key: value for key, value in mat.items() if not key.startswith('__')}
 recording = ProcessedLFP(data)
 
-#%% Preview a short LFP segment
-PREVIEW_START_S = 0
-PREVIEW_DURATION_S = 5
-PREVIEW_CHANNELS = min(3, recording.traces.shape[1])
-
-time = np.arange(recording.traces.shape[0]) / recording.fs
-channel_sd = np.nanstd(recording.traces, axis=0)
-channel_names = recording.channel_names[:PREVIEW_CHANNELS]
-channel_ids = recording.channel_ids[:PREVIEW_CHANNELS]
-preview_traces = recording.traces[:int(PREVIEW_DURATION_S * recording.fs), :PREVIEW_CHANNELS]
-fs = preview_traces.shape[0] / PREVIEW_DURATION_S
-
-start = int(PREVIEW_START_S * fs)
-stop = int((PREVIEW_START_S + PREVIEW_DURATION_S) * fs)
-offset = 4 * np.nanmedian(channel_sd[:PREVIEW_CHANNELS])
-
-plt.figure(figsize=(3,3), dpi=300)
-for channel_idx in range(PREVIEW_CHANNELS):
-    plt.plot(
-        time[start:stop],
-        preview_traces[start:stop, channel_idx] + channel_idx * offset,
-        lw=0.6,
-        label=channel_names[channel_idx],
-    )
-plt.xlabel('Time (s)')
-plt.ylabel('Amplitude + offset')
-plt.title('EMU-0130 processed LFP preview')
-plt.legend(frameon=False, loc='best', fontsize=5)
-finish_plot()
-
 #%% PSDs for all channels
-PSD_WINDOW_S = 2.0
-PSD_OVERLAP_FRAC = 0.5
-PSD_MAX_HZ = 100
-
-recording.compute_psd(window_s=PSD_WINDOW_S, overlap_frac=PSD_OVERLAP_FRAC)
-channel_indices = np.arange(recording.traces.shape[1])
-cmap = plt.cm.rainbow
-norm = plt.Normalize(vmin=channel_indices[0], vmax=channel_indices[-1])
-colors = cmap(norm(channel_indices))
-plt.figure(figsize=(3,3), dpi=300)
-for channel_idx, color in enumerate(colors):
-    mask = recording.psd_f <= PSD_MAX_HZ
-    plt.plot(recording.psd_f[mask], recording.psd[mask, channel_idx], lw=0.7, alpha=0.85, color=color)
-plt.yscale('log')
-plt.xlabel('Frequency (Hz)')
-plt.ylabel('PSD')
-cbar = plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=plt.gca(), label='Channel index')
-cbar.ax.tick_params(labelsize=7) 
-cbar.set_label('Channel index', size=7, weight='bold')
-plt.title('PSD of all channels')
-finish_plot()
+recording.plot_psd(window_s=1.0, overlap_frac=0.5, max_hz=100)
 
 #%% Spectrogram for one selected channel
 
-spec_time, spec_freqs_hz, spec_power = recording.compute_spectrogram(
-    channel=4,
-    start_s=0,
-    duration_s=60,
+SPECTROGRAM_KWARGS = dict(
     freqs_hz=np.arange(1, 101, dtype=float),
     fwhm=0.5,
     wavelet_window_s=1.0,
+)
+spec_time, spec_freqs_hz, spec_power = recording.compute_spectrogram(
+    channel=0,
+    start_s=0,
+    duration_s=350,
+    **SPECTROGRAM_KWARGS,
 )
 
 display_step = max(int(round(recording.fs / 100)), 1)
@@ -165,6 +171,8 @@ plt.pcolormesh(
     np.log(spec_power[:, ::display_step] + 1e-12),
     cmap='viridis',
     shading='auto',
+    vmin=-10,
+    vmax=10,
 )
 plt.colorbar(label='Log power')
 plt.xlabel('Time (s)')
@@ -173,34 +181,106 @@ plt.title(f'Spectrogram: {recording.channel_names[recording.spec_channel_idx]}')
 finish_plot()
 
 
-#%% PCA of the selected channel spectrogram
-recording.PCA()
-
-# print cumulative variance explained by the PCA components
-cumulative_variance = np.cumsum(recording.pca.explained_variance_ratio_)
-plt.figure(figsize=(3,3), dpi=300)
-plt.plot(cumulative_variance[:30], lw=1)
-plt.xlabel('Number of PCA components')
-plt.ylabel('Cumulative variance explained')
-plt.title('PCA of spectrogram power')
-finish_plot()
-
-#%% For spec_power, shuffle the time points and run PCA again to get a null distribution of variance explained
+#%% PCA of the selected channel spectrogram trace-level phase-randomized PCA null
 from sklearn.decomposition import PCA
 
-shuffled_power = recording.spec_power.copy()
-for freq_idx in range(shuffled_power.shape[0]):
-    np.random.shuffle(shuffled_power[freq_idx])
-shuffled_pca = PCA().fit(shuffled_power.T)
-null_variance = np.cumsum(shuffled_pca.explained_variance_ratio_)
+recording.PCA()
 
+# PCA centers each frequency feature before fitting.
+cumulative_variance = np.cumsum(recording.pca.explained_variance_ratio_)
+z_power, _ = get_freq_cov_from_power(recording.spec_power)
+z_pca = PCA().fit(z_power.T)
+z_cumulative_variance = np.cumsum(z_pca.explained_variance_ratio_)
+
+N_NULL_SURROGATES = 100
+NULL_SEED = 0
+rng = np.random.default_rng(NULL_SEED)
+null_cumulative_variance = np.empty((N_NULL_SURROGATES, recording.spec_power.shape[0]))
+z_null_cumulative_variance = np.empty_like(null_cumulative_variance)
+
+for null_idx in range(N_NULL_SURROGATES):
+    if null_idx % 10 == 0:
+        print(f'Running phase-randomized surrogate {null_idx + 1}/{N_NULL_SURROGATES}')
+    surrogate_trace = phase_randomize_trace(recording.spec_trace, rng)
+    _, _, surrogate_power = get_spectrogram(
+        surrogate_trace,
+        fs=recording.fs,
+        **SPECTROGRAM_KWARGS,
+    )
+    surrogate_pca = PCA().fit(surrogate_power.T)
+    null_cumulative_variance[null_idx] = np.cumsum(surrogate_pca.explained_variance_ratio_)
+    surrogate_z_power, _ = get_freq_cov_from_power(surrogate_power)
+    surrogate_z_pca = PCA().fit(surrogate_z_power.T)
+    z_null_cumulative_variance[null_idx] = np.cumsum(surrogate_z_pca.explained_variance_ratio_)
+
+null_median = np.median(null_cumulative_variance, axis=0)
+null_lower, null_upper = np.percentile(null_cumulative_variance, [2.5, 97.5], axis=0)
+pc1_p_value = (np.sum(null_cumulative_variance[:, 0] >= cumulative_variance[0]) + 1) / (N_NULL_SURROGATES + 1)
+print(f'Observed PC1 variance: {cumulative_variance[0]:.3f}; phase-null p = {pc1_p_value:.3f}')
+
+N_PCS_TO_PLOT = recording.spec_power.shape[0]
+component_numbers = np.arange(1, N_PCS_TO_PLOT + 1)
 plt.figure(figsize=(3,3), dpi=300)
-plt.plot(cumulative_variance[:30], lw=1)
-plt.plot(null_variance[:30], lw=1, color='k')
+plt.fill_between(
+    component_numbers,
+    null_lower[:N_PCS_TO_PLOT],
+    null_upper[:N_PCS_TO_PLOT],
+    color='0.85',
+    label='Phase-null 95% interval',
+)
+plt.plot(component_numbers, cumulative_variance[:N_PCS_TO_PLOT], lw=1, color='r', label='Original')
+plt.plot(component_numbers, null_median[:N_PCS_TO_PLOT], lw=1, color='k', ls='--', label='Phase-null median')
 plt.xlabel('Number of PCA components')
 plt.ylabel('Cumulative variance explained')
 plt.title('PCA of spectrogram power')
+plt.legend(frameon=False, loc='best', fontsize=7)
 finish_plot()
+
+#%% Z-scored log-power PCA with the same phase-randomized null
+z_null_median = np.median(z_null_cumulative_variance, axis=0)
+z_null_lower, z_null_upper = np.percentile(z_null_cumulative_variance, [2.5, 97.5], axis=0)
+z_pc1_p_value = (np.sum(z_null_cumulative_variance[:, 0] >= z_cumulative_variance[0]) + 1) / (N_NULL_SURROGATES + 1)
+
+raw_n_pcs_95 = np.searchsorted(cumulative_variance, 0.95) + 1
+z_n_pcs_95 = np.searchsorted(z_cumulative_variance, 0.95) + 1
+raw_null_n_pcs_95 = np.array([np.searchsorted(curve, 0.95) + 1 for curve in null_cumulative_variance])
+z_null_n_pcs_95 = np.array([np.searchsorted(curve, 0.95) + 1 for curve in z_null_cumulative_variance])
+print(
+    'PCs for 95% variance: '
+    f'raw={raw_n_pcs_95} (null median={np.median(raw_null_n_pcs_95):.0f}); '
+    f'z-scored log-power={z_n_pcs_95} (null median={np.median(z_null_n_pcs_95):.0f})'
+)
+print(f'Z-scored log-power PC1 variance: {z_cumulative_variance[0]:.3f}; phase-null p = {z_pc1_p_value:.3f}')
+
+plt.figure(figsize=(3,3), dpi=300)
+plt.fill_between(
+    component_numbers,
+    z_null_lower[:N_PCS_TO_PLOT],
+    z_null_upper[:N_PCS_TO_PLOT],
+    color='0.85',
+    label='Phase-null 95% interval',
+)
+plt.plot(component_numbers, z_cumulative_variance[:N_PCS_TO_PLOT], lw=1, color='r', label='Original')
+plt.plot(component_numbers, z_null_median[:N_PCS_TO_PLOT], lw=1, color='k', ls='--', label='Phase-null median')
+plt.xlabel('Number of PCA components')
+plt.ylabel('Cumulative variance explained')
+plt.title('PCA of z-scored log-power')
+plt.legend(frameon=False, loc='best', fontsize=7)
+finish_plot()
+
+#%% Plot the first couple of PCs
+
+fig, ax = plt.subplots(1,5, figsize=(15,3), dpi=300)
+
+for i in range(5):
+    ax[i].plot(z_pca.components_[i], color='k')
+    ax[i].set_title(f'PC {i + 1} ({z_pca.explained_variance_ratio_[i] * 100:.1f}% var)')
+    ax[i].set_xlabel('Frequency bin')
+    ax[i].set_ylabel('Component weight')
+plt.tight_layout()
+finish_plot()
+
+
 # %% QC
 
 class LFP_QC:
