@@ -1,42 +1,38 @@
 import numpy as np
 
-from spectral import get_autocorr
-from scipy import signal
 
-def simulate_trace(sim_time, rng, freqs_hz, base_amplitudes, phases_rad, envelope_mode,
-                   envelope_scales, smooth_window_s, additive_noise_sd=0):
-    freqs_hz = np.asarray(freqs_hz, dtype=float)
+#%% Functions for simulating oscillatory signals with time-varying envelopes
+
+def _build_smooth_noise(time, random_state, scale, window_s):
+    if scale == 0:
+        return np.zeros(time.shape[0])
+
+    dt = time[1] - time[0]
+    n_samples = time.shape[0]
+    noise = random_state.standard_normal(n_samples)
+    smooth_window_samples = max(int(round(window_s / dt)), 1)
+    kernel = np.ones(smooth_window_samples, dtype=float)
+    kernel /= kernel.sum()
+    pad = smooth_window_samples // 2
+    noise_pad = np.pad(noise, pad_width=pad, mode='wrap')
+    smooth_noise = np.convolve(noise_pad, kernel, mode='valid')
+    smooth_noise = smooth_noise[:n_samples]
+    smooth_noise -= smooth_noise.mean()
+
+    noise_std = smooth_noise.std()
+    if noise_std > 0:
+        smooth_noise /= noise_std
+
+    return scale * smooth_noise
+
+
+def build_oscillation_envelopes(sim_time, rng, base_amplitudes, envelope_mode,
+                                envelope_scales, smooth_window_s):
     base_amplitudes = np.asarray(base_amplitudes, dtype=float)
-    phases_rad = np.asarray(phases_rad, dtype=float)
     envelope_scales = np.asarray(envelope_scales, dtype=float)
 
-    def build_smooth_noise(time, random_state, scale, window_s):
-        if scale == 0:
-            return np.zeros(time.shape[0])
-
-        dt = time[1] - time[0]
-        n_samples = time.shape[0]
-        noise = random_state.standard_normal(n_samples)
-        smooth_window_samples = max(int(round(window_s / dt)), 1)
-        kernel = np.ones(smooth_window_samples, dtype=float)
-        kernel /= kernel.sum()
-        pad = smooth_window_samples // 2
-        noise_pad = np.pad(noise, pad_width=pad, mode='wrap')
-        smooth_noise = np.convolve(noise_pad, kernel, mode='valid')
-        smooth_noise = smooth_noise[:n_samples]
-        smooth_noise -= smooth_noise.mean()
-
-        noise_std = smooth_noise.std()
-        if noise_std > 0:
-            smooth_noise /= noise_std
-
-        # sos = signal.butter(5, 0.1, btype='lowpass', fs=100, output='sos')
-        # smooth_noise = signal.sosfiltfilt(sos, smooth_noise)
-
-        return scale * smooth_noise
-
-    if len({arr.shape for arr in (freqs_hz, base_amplitudes, phases_rad, envelope_scales)}) != 1:
-        raise ValueError('All per-frequency parameter arrays must have the same shape.')
+    if base_amplitudes.shape != envelope_scales.shape:
+        raise ValueError('base_amplitudes and envelope_scales must have the same shape.')
 
     envelopes = np.repeat(base_amplitudes[:, None], sim_time.shape[0], axis=1)
     if envelope_mode not in {'constant', 'ind', 'shared'}:
@@ -45,121 +41,166 @@ def simulate_trace(sim_time, rng, freqs_hz, base_amplitudes, phases_rad, envelop
     if envelope_mode != 'constant':
         if envelope_mode == 'ind':
             for freq_idx, scale in enumerate(envelope_scales):
-                envelopes[freq_idx] += build_smooth_noise(sim_time, rng, scale, smooth_window_s)
+                envelopes[freq_idx] += _build_smooth_noise(sim_time, rng, scale, smooth_window_s)
         else:
-            shared_noise = build_smooth_noise(sim_time, rng, scale=1, window_s=smooth_window_s)
+            shared_noise = _build_smooth_noise(sim_time, rng, scale=1, window_s=smooth_window_s)
             envelopes += envelope_scales[:, None] * shared_noise[None, :]
 
-    envelopes = np.clip(envelopes, a_min=0, a_max=None)
+    return np.clip(envelopes, a_min=0, a_max=None)
+
+
+def generate_oscillation_trace(sim_time, rng, freqs_hz, base_amplitudes, phases_rad, envelope_mode,
+                               envelope_scales, smooth_window_s, additive_noise_sd=0):
+    freqs_hz = np.asarray(freqs_hz, dtype=float)
+    base_amplitudes = np.asarray(base_amplitudes, dtype=float)
+    phases_rad = np.asarray(phases_rad, dtype=float)
+    envelope_scales = np.asarray(envelope_scales, dtype=float)
+
+    if len({arr.shape for arr in (freqs_hz, base_amplitudes, phases_rad, envelope_scales)}) != 1:
+        raise ValueError('All per-frequency parameter arrays must have the same shape.')
+
+    envelopes = build_oscillation_envelopes(
+        sim_time=sim_time,
+        rng=rng,
+        base_amplitudes=base_amplitudes,
+        envelope_mode=envelope_mode,
+        envelope_scales=envelope_scales,
+        smooth_window_s=smooth_window_s,
+    )
     carriers = np.sin(2 * np.pi * freqs_hz[:, None] * sim_time[None, :] + phases_rad[:, None])
     sim_trace = np.sum(envelopes * carriers, axis=0)
     if additive_noise_sd > 0:
         sim_trace += additive_noise_sd * rng.standard_normal(sim_time.shape[0])
-    return sim_trace, envelopes, carriers
+    return sim_trace, envelopes
 
 
-def build_ground_truth_spectrogram(spec_freqs_hz, active_freqs_hz, envelopes):
-    spec_freqs_hz = np.asarray(spec_freqs_hz, dtype=float)
-    active_freqs_hz = np.asarray(active_freqs_hz, dtype=float)
-    envelopes = np.asarray(envelopes, dtype=float)
+#%% Functions for simulating PSD-shaped noise traces
 
-    if active_freqs_hz.shape[0] != envelopes.shape[0]:
-        raise ValueError('active_freqs_hz and envelopes must have the same number of rows.')
+def generate_pinknoise_trace(sim_time, rng, alpha, target_sd, mean, fmin_hz):
+    """Generate one stationary 1/f^alpha trace by shaping Fourier coefficients.
 
-    power_by_freq_time = np.zeros((spec_freqs_hz.shape[0], envelopes.shape[1]), dtype=float)
-    for freq_idx, freq_hz in enumerate(active_freqs_hz):
-        match_idx = np.where(np.isclose(spec_freqs_hz, freq_hz))[0]
-        if match_idx.size != 1:
-            raise ValueError(f'Expected exactly one matching spectrogram bin for {freq_hz} Hz.')
-        power_by_freq_time[match_idx[0]] = envelopes[freq_idx] ** 2
+    The construction follows the standard frequency-domain recipe for a
+    pink-noise-like background:
 
-    return power_by_freq_time
+    1. Build the one-sided rFFT frequency grid from the sample spacing.
+    2. Define the target background power spectrum on that grid as
+       P(f) ~ 1 / max(f, fmin_hz)^alpha for positive frequencies.
+       The max(..., fmin_hz) floor prevents the singularity at f = 0.
+    3. Convert target power into Fourier magnitudes using
+       |X(f)| ~ sqrt(P(f)) ~ 1 / max(f, fmin_hz)^(alpha / 2).
+    4. Assign each positive-frequency bin a random phase drawn uniformly from
+       [0, 2*pi). DC is held at zero, and the Nyquist bin stays real-valued
+       when the trace length is even.
+    5. Apply the inverse real FFT to obtain a real-valued time series.
+    6. Demean and rescale the trace to the requested standard deviation, then
+       add the requested mean offset.
 
+    Parameters
+    ----------
+    sim_time : ndarray
+        Simulation time vector in seconds. Its spacing determines the FFT
+        frequency grid and therefore the lowest nonzero resolvable frequency.
+    rng : numpy.random.Generator
+        Random number generator used for phase sampling.
+    alpha : float
+        Power-law exponent in the target PSD. alpha = 1 gives pink noise.
+    target_sd : float
+        Desired standard deviation of the output trace after normalization.
+    mean : float
+        Constant offset added after scaling.
+    fmin_hz : float or None
+        Optional low-frequency floor for the 1/f^alpha law. If None, use the
+        first nonzero FFT bin.
 
-def participation_ratio(values):
-    values = np.asarray(values, dtype=float)
-    values = values[values > 0]
-    if values.size == 0:
-        return np.nan
-    return values.sum() ** 2 / np.sum(values ** 2)
+    Returns
+    -------
+    trace : ndarray
+        Real-valued pink-noise trace sampled on sim_time.
+    fft_freqs_hz : ndarray
+        One-sided FFT frequency grid corresponding to the generated spectrum.
+    target_power : ndarray
+        Idealized one-sided target PSD shape, normalized to 1 at the first
+        positive-frequency bin.
+    effective_fmin_hz : float
+        The low-frequency floor actually used during spectral shaping.
+    """
+    sim_time = np.asarray(sim_time, dtype=float)
+    if sim_time.ndim != 1 or sim_time.size < 2:
+        raise ValueError('sim_time must be a one-dimensional array with at least 2 samples.')
+    if alpha < 0:
+        raise ValueError('pink_alpha must be non-negative.')
+    if target_sd < 0:
+        raise ValueError('pink_sd must be non-negative.')
 
+    dt = float(sim_time[1] - sim_time[0])
+    if dt <= 0:
+        raise ValueError('sim_time must be strictly increasing.')
 
-def summarize_simulation(sim, n_summary_freqs=3, acf_max_lag_s=60):
-    log_power = np.log(sim.spec_power + 1e-12)
-    fs = 1 / np.median(np.diff(sim.spec_time))
-    summary_freq_idx = np.argsort(log_power.mean(axis=1))[-n_summary_freqs:]
-    summary_freq_idx = np.sort(summary_freq_idx)
-    summary_freqs_hz = sim.spec_freqs_hz[summary_freq_idx]
+    # Build the one-sided FFT frequency grid used by rFFT / irFFT.
+    # The first nonzero bin sets the natural low-frequency resolution of the trace.
+    n_samples = sim_time.size
+    fft_freqs_hz = np.fft.rfftfreq(n_samples, d=dt)
+    if fft_freqs_hz.size < 2:
+        raise ValueError('Need at least one positive FFT bin to generate pink noise.')
 
-    acf_max_lag_samples = min(int(round(acf_max_lag_s * fs)), log_power.shape[1] - 1)
-    acf_by_freq = np.vstack([get_autocorr(log_power[freq_idx], acf_max_lag_samples) for freq_idx in summary_freq_idx])
-    mean_acf = acf_by_freq.mean(axis=0)
-    acf_lags_s = np.arange(mean_acf.shape[0]) / fs
-    decay_idx = np.where(mean_acf < np.exp(-1))[0]
-    acf_decay_s = acf_lags_s[decay_idx[0]] if decay_idx.size else np.nan
+    min_positive_hz = float(fft_freqs_hz[1])
+    if fmin_hz is None:
+        effective_fmin_hz = min_positive_hz
+    else:
+        effective_fmin_hz = float(fmin_hz)
 
-    pca_cumulative = np.cumsum(sim.pca.explained_variance_ratio_)
-    freq_corr_upper = sim.freq_corr[np.triu_indices_from(sim.freq_corr, k=1)]
+    max_fft_hz = float(fft_freqs_hz[-1])
+    if effective_fmin_hz <= 0:
+        raise ValueError('pink_fmin_hz must be positive.')
+    if effective_fmin_hz > max_fft_hz:
+        raise ValueError(
+            f'pink_fmin_hz ({effective_fmin_hz:g} Hz) exceeds the maximum FFT bin ({max_fft_hz:g} Hz).'
+        )
 
-    return dict(
-        summary_freq_idx=summary_freq_idx,
-        summary_freqs_hz=summary_freqs_hz,
-        acf_lags_s=acf_lags_s,
-        mean_acf=mean_acf,
-        acf_decay_s=acf_decay_s,
-        pc1_var_explained=sim.pca.explained_variance_ratio_[0],
-        n_pcs_95=np.searchsorted(pca_cumulative, 0.95) + 1,
-        effective_rank=participation_ratio(sim.pca.explained_variance_),
-        freq_corr_upper=freq_corr_upper,
+    # Shape the Fourier magnitudes so the implied power spectrum follows 1/f^alpha.
+    # Because power is squared magnitude, the magnitude scales as 1/f^(alpha/2).
+    amplitudes = np.zeros_like(fft_freqs_hz)
+    positive = fft_freqs_hz > 0
+    amplitudes[positive] = 1.0 / np.power(
+        np.maximum(fft_freqs_hz[positive], effective_fmin_hz),
+        alpha / 2.0,
     )
 
+    # Populate the one-sided complex spectrum with random phases.
+    # DC stays at zero, the Nyquist bin must stay real when n_samples is even,
+    # and all other positive-frequency bins get independent random phases.
+    spectrum = np.zeros_like(fft_freqs_hz, dtype=complex)
+    if n_samples % 2 == 0:
+        interior = slice(1, -1)
+        spectrum[-1] = amplitudes[-1] * rng.choice((-1.0, 1.0))
+    else:
+        interior = slice(1, None)
 
-def mean_and_sem(values):
-    values = np.asarray(values, dtype=float)
-    valid = np.isfinite(values)
-    if not np.any(valid):
-        return np.nan, np.nan
-    mean = np.nanmean(values)
-    if np.sum(valid) == 1:
-        return mean, 0.0
-    sem = np.nanstd(values, ddof=1) / np.sqrt(np.sum(valid))
-    return mean, sem
+    n_interior = spectrum[interior].size
+    if n_interior > 0:
+        phases = rng.uniform(0.0, 2.0 * np.pi, size=n_interior)
+        spectrum[interior] = amplitudes[interior] * np.exp(1j * phases)
 
+    # Transform back to the time domain and normalize to the requested mean / SD.
+    trace = np.fft.irfft(spectrum, n=n_samples)
+    trace -= trace.mean()
+    if target_sd == 0:
+        trace.fill(0.0)
+    else:
+        trace_std = trace.std()
+        if trace_std == 0:
+            raise RuntimeError('Generated pink-noise trace has zero variance before scaling.')
+        trace *= target_sd / trace_std
+    trace += mean
 
-def init_summary_bucket():
-    return dict(
-        n_seeds=0,
-        acf_lags_s=None,
-        acf_decay_s=[],
-        pc1_var_explained=[],
-        n_pcs_95=[],
-        effective_rank=[],
-        summary_freqs_hz=[],
-        mean_acf=[],
-        freq_corr_upper=[],
+    # Save the idealized target PSD shape for downstream inspection.
+    # It is normalized to 1 at the first positive-frequency bin.
+    target_power = np.zeros_like(fft_freqs_hz)
+    target_power[positive] = 1.0 / np.power(
+        np.maximum(fft_freqs_hz[positive], effective_fmin_hz),
+        alpha,
     )
+    if target_power[positive].size > 0:
+        target_power[positive] /= target_power[positive][0]
 
-
-def update_summary_bucket(bucket, metrics):
-    if bucket['acf_lags_s'] is None:
-        bucket['acf_lags_s'] = metrics['acf_lags_s']
-    bucket['n_seeds'] += 1
-    bucket['acf_decay_s'].append(metrics['acf_decay_s'])
-    bucket['pc1_var_explained'].append(metrics['pc1_var_explained'])
-    bucket['n_pcs_95'].append(metrics['n_pcs_95'])
-    bucket['effective_rank'].append(metrics['effective_rank'])
-    bucket['summary_freqs_hz'].append(metrics['summary_freqs_hz'])
-    bucket['mean_acf'].append(metrics['mean_acf'])
-    bucket['freq_corr_upper'].append(metrics['freq_corr_upper'])
-    return bucket
-
-
-def finalize_summary_bucket(bucket):
-    for key in ('acf_decay_s', 'pc1_var_explained', 'n_pcs_95', 'effective_rank'):
-        bucket[key] = np.asarray(bucket[key], dtype=float)
-        bucket[f'{key}_mean'], bucket[f'{key}_sem'] = mean_and_sem(bucket[key])
-
-    bucket['summary_freqs_hz'] = np.vstack(bucket['summary_freqs_hz'])
-    bucket['mean_acf'] = np.vstack(bucket['mean_acf'])
-    bucket['freq_corr_upper'] = np.vstack(bucket['freq_corr_upper'])
-    return bucket
+    return trace, fft_freqs_hz, target_power, effective_fmin_hz

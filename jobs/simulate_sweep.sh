@@ -31,7 +31,7 @@ echo "Host: $(hostname)"
 echo "Job ID: ${SLURM_JOB_ID:-interactive}"
 echo "Repo dir: ${REPO_DIR}"
 
-uv run python -u "${REPO_DIR}/simulate_sweep.py" \
+uv run python -u "${REPO_DIR}/jobs/simulate_sweep.py" \
   --n-seeds "${N_SEEDS}" \
   --sim-duration-s "${SIM_DURATION_S}" \
   --output-subdir "${OUTPUT_SUBDIR}"

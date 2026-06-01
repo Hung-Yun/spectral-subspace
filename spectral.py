@@ -1,6 +1,17 @@
 import numpy as np
 from scipy import signal
 
+"""
+
+Spectral analysis functions for simulated and real neural time series data.
+Functions include:
+- get_psd: Compute power spectral density using Welch's method.
+- get_spectrogram: Compute time-frequency power using Morlet wavelet convolution.
+- get_power_cov: Compute frequency covariance from power time series.
+- get_autocorr: Compute autocorrelation function up to a specified lag.
+
+"""
+
 
 def get_psd(trace, fs, window_s, overlap_frac, window='hann', axis=0):
     trace = np.asarray(trace, dtype=float)
@@ -47,7 +58,7 @@ def get_spectrogram(trace, fs, freqs_hz, fwhm=0.3, wavelet_window_s=1.0):
     return tf_time, freqs_hz, tf_power
 
 
-def get_freq_cov_from_power(power_by_freq_time, z_scored=True, eps=1e-12):
+def get_power_cov(power_by_freq_time, z_scored=True, eps=1e-12):
     log_power = np.log(power_by_freq_time + eps)
     power_mean = log_power.mean(axis=1, keepdims=True)
     power_std = log_power.std(axis=1, keepdims=True)
