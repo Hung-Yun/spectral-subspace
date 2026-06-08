@@ -18,7 +18,7 @@ REPO_DIR = os.path.dirname(SCRIPT_DIR)
 if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
 
-import fa
+# import fa
 from simulate_core import generate_oscillation_trace
 from spectral import get_autocorr, get_power_cov, get_psd, get_spectrogram
 from utils import fig_set, finish_plot
@@ -270,7 +270,7 @@ simulations = [ind_noise, shared_noise]
 
 for sim in simulations:
     sim.PCA()
-    sim.FA()
+    # sim.FA()
 
 
 #%% Envelopes

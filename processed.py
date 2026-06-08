@@ -3,6 +3,19 @@ from spectral import get_psd, get_spectrogram
 from utils import finish_plot
 import matplotlib.pyplot as plt
 
+
+def _maybe_scalar(value):
+    if value is None:
+        return None
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return None
+        value = value.item() if value.size == 1 else value
+    if isinstance(value, bytes):
+        return value.decode()
+    return value
+
+
 class ProcessedLFP:
     def __init__(self, data):
         """
@@ -11,6 +24,9 @@ class ProcessedLFP:
         self.traces = np.asarray(data['lfp_ds'], dtype=float)
         self.fs = float(data['fs'])
         self.source_fs = float(data['source_fs'])
+        self.subject = _maybe_scalar(data.get('subject'))
+        self.emu_id = _maybe_scalar(data.get('emu_id'))
+        self.task = _maybe_scalar(data.get('task'))
         self.channel_ids = np.atleast_1d(data['channel_ids']).astype(str)
         self.channel_names = np.atleast_1d(data['channel_names']).astype(str)
         self.regions = np.atleast_1d(data['regions']).astype(str)
@@ -21,18 +37,6 @@ class ProcessedLFP:
         self.spec_power = None
         self.spec_trace = None
         self.spec_channel_idx = None
-        self.freq_corr = None
-
-        # Derived data
-        self.traces_z_scored = None
-        self.traces_log = None
-        self.traces_z_scored_log = None
-        self.get_traces()
-
-    def get_traces(self):
-        self.traces_z_scored = (self.traces - np.nanmean(self.traces, axis=0)) / np.nanstd(self.traces, axis=0)
-        self.traces_log = np.log(self.traces_z_scored - np.nanmin(self.traces_z_scored) + 1e-12)
-        self.traces_z_scored_log = (self.traces_log - np.nanmean(self.traces_log, axis=0)) / np.nanstd(self.traces_log, axis=0)
 
     def summary(self):
         n_samples, n_channels = self.traces.shape
@@ -78,32 +82,76 @@ class ProcessedLFP:
         )
         self.spec_time += start_s
         return self.spec_time, self.spec_freqs_hz, self.spec_power
-    
-    def compute_freq_corr(self):
-        if self.spec_power is not None:
-            self.freq_corr = np.corrcoef(np.log(self.spec_power + 1e-12))
+
+    def transform_data(self, source='traces', transform='raw', eps=1e-12):
+        if source == 'traces':
+            data = np.asarray(self.traces, dtype=float)
+            data = data.T if data.ndim == 2 else np.atleast_2d(data)
+        elif source == 'spec_power':
+            if self.spec_power is None:
+                raise ValueError('Must compute spectrogram before requesting spec_power.')
+            data = np.atleast_2d(np.asarray(self.spec_power, dtype=float))
+        elif source == 'psd':
+            if self.psd is None:
+                raise ValueError('Must compute PSD before requesting psd.')
+            data = np.atleast_2d(np.asarray(self.psd, dtype=float))
         else:
-            raise Exception('Must compute spectrogram before computing frequency correlation.')
-        return self.freq_corr
-    
+            raise ValueError(f'Unsupported source {source!r}.')
+
+        def zscore_rows(matrix):
+            row_mean = np.nanmean(matrix, axis=1, keepdims=True)
+            row_std = np.nanstd(matrix, axis=1, keepdims=True)
+            row_std[row_std == 0] = 1
+            return (matrix - row_mean) / row_std
+
+        def log_rows(matrix):
+            row_min = np.nanmin(matrix, axis=1, keepdims=True)
+            shift = np.where(row_min <= 0, -row_min + eps, 0.0)
+            return np.log(matrix + shift + eps)
+
+        if transform == 'raw':
+            return data
+        if transform == 'zscore':
+            return zscore_rows(data)
+        if transform == 'log':
+            return log_rows(data)
+        if transform == 'log_zscore':
+            return zscore_rows(log_rows(data))
+        if transform == 'zscore_log':
+            return log_rows(zscore_rows(data))
+        raise ValueError(f'Unsupported transform {transform!r}.')
+
+    def compute_corr(self, source='spec_power', transform='raw'):
+        data = self.transform_data(source=source, transform=transform)
+        variable_rows = np.nanstd(data, axis=1) > 0
+        corr = np.zeros((data.shape[0], data.shape[0]), dtype=float)
+
+        if np.any(variable_rows):
+            if np.sum(variable_rows) == 1:
+                corr[np.ix_(variable_rows, variable_rows)] = 1.0
+            else:
+                corr[np.ix_(variable_rows, variable_rows)] = np.corrcoef(data[variable_rows])
+        return corr
 
     def plot_lfp_traces(self, start_s, dur_s, n_channels=5):
-                
+        n_channels = min(int(n_channels), self.traces.shape[1])
+        start = int(round(start_s * self.fs))
+        stop = min(int(round((start_s + dur_s) * self.fs)), self.traces.shape[0])
+        if start < 0 or start >= stop:
+            raise ValueError('Requested trace window is outside the recording.')
+
         time = np.arange(self.traces.shape[0]) / self.fs
         channel_sd = np.nanstd(self.traces, axis=0)
         channel_names = self.channel_names[:n_channels]
-        preview_traces = self.traces[:int(dur_s * self.fs), :n_channels]
-        fs = preview_traces.shape[0] / dur_s
-
-        start = int(start_s * fs)
-        stop = int((start_s + dur_s) * fs)
+        preview_traces = self.traces[start:stop, :n_channels]
+        preview_time = time[start:stop]
         offset = 4 * np.nanmedian(channel_sd[:n_channels])
 
         plt.figure(figsize=(3,3), dpi=300)
         for channel_idx in range(n_channels):
             plt.plot(
-                time[start:stop],
-                preview_traces[start:stop, channel_idx] + channel_idx * offset,
+                preview_time,
+                preview_traces[:, channel_idx] + channel_idx * offset,
                 lw=0.6,
                 label=channel_names[channel_idx],
             )

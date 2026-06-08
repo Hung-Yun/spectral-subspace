@@ -13,3 +13,4 @@ logs/
 .cache/
 .ipython/
 tmp/
+plots/

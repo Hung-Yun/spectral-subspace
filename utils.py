@@ -1,5 +1,4 @@
 import os
-from datetime import datetime
 
 NS5DIR_CANDIDATES = (
     "/Volumes/stitched/EMU-18112",
@@ -115,54 +114,39 @@ def fig_set(font_size=8, linewidth=LW):
     matplotlib.rcParams['ps.fonttype'] = 42
 
 
-def save_plot(
-    filename: str,
-    save_dir: str,
-    exts=('png', 'svg'),
+def finish_plot(
+    filename=None,
+    save_dir=None,
     savefig=True,
-    use_date_subfolder=False,
-    include_time=False,
-    extra_folder=None,
+    show=True,
+    exts=('png', 'svg', 'pdf'),
 ):
-    if not savefig:
-        return
-
-    _, plt, _ = _get_plot_modules()
-
-    if use_date_subfolder:
-        date_str = datetime.now().strftime('%Y-%m-%d' if not include_time else '%Y-%m-%d_%H-%M-%S')
-        save_dir = os.path.join(save_dir, date_str)
-
-    if extra_folder:
-        save_dir = os.path.join(save_dir, extra_folder)
-
-    os.makedirs(save_dir, exist_ok=True)
-
-    fig = plt.gcf()
-    fig_patch_visible = fig.patch.get_visible()
-    ax_patch_visible = [ax.patch.get_visible() for ax in fig.axes]
-
-    fig.patch.set_visible(False)
-    for ax in fig.axes:
-        ax.patch.set_visible(False)
-
-    try:
-        for ext in exts:
-            path = os.path.join(save_dir, f'{filename}.{ext}')
-            plt.savefig(path, bbox_inches='tight')
-            print(f'Saved: {path}')
-    finally:
-        fig.patch.set_visible(fig_patch_visible)
-        for ax, visible in zip(fig.axes, ax_patch_visible):
-            ax.patch.set_visible(visible)
-
-
-def finish_plot(filename=None, save_dir=None, savefig=True, show=True):
     _, plt, sns = _get_plot_modules()
     sns.despine(trim=False)
     plt.tight_layout()
-    if save_dir is not None and filename is not None:
-        save_plot(filename=filename, save_dir=save_dir, savefig=savefig)
-    elif show:
+
+    if savefig and save_dir is not None and filename is not None:
+        os.makedirs(save_dir, exist_ok=True)
+
+        fig = plt.gcf()
+        fig_patch_visible = fig.patch.get_visible()
+        ax_patch_visible = [ax.patch.get_visible() for ax in fig.axes]
+
+        fig.patch.set_visible(False)
+        for ax in fig.axes:
+            ax.patch.set_visible(False)
+
+        try:
+            for ext in exts:
+                path = os.path.join(save_dir, f'{filename}.{ext}')
+                plt.savefig(path, bbox_inches='tight')
+                print(f'Saved: {path}')
+        finally:
+            fig.patch.set_visible(fig_patch_visible)
+            for ax, visible in zip(fig.axes, ax_patch_visible):
+                ax.patch.set_visible(visible)
+
+    if show:
         plt.show()
-    plt.close()
+    else:
+        plt.close()

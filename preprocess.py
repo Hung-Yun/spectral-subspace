@@ -33,7 +33,7 @@ except ModuleNotFoundError:
     scur = None
     sw = None
 
-"""
+""" TODO: examine the pipeline
 OVERALL PREPROCESSING PIPELINE
 1. Read NS5/NS3.
 2. Extract raw signal, channel info, fs, timestamps, TTL/events.
@@ -53,6 +53,9 @@ SENSA_CHANNEL_PATTERN = re.compile(
     r'(?P<entry>[FPOT]\d+[a-z]?)'
     r'(?P<targets>(?:PH|OF|OT|[A-Z][a-z]?)+)'
     r'(?P<contact>\d+)-(?P<channel>\d+)$'
+)
+NEURAL_RECORDING_PATTERN = re.compile(
+    r'^(?P<emu_label>EMU-(?P<emu_id>\d{1,4}))_subj-(?P<subject>[^_]+)_task-(?P<task>[^_]+)(?:_|$)'
 )
 
 REPO_DATADIR = _get_repo_datadir()
@@ -172,6 +175,28 @@ def get_output_mat_path(ns5_path):
     return os.path.join(output_dir, f'{stem}_ds_lfp.mat')
 
 
+def parse_neural_recording_filename(path_or_filename):
+    """
+    Parse subject, EMU ID, and task from a neural recording filename.
+
+    Expected format:
+    EMU-0130_subj-YFA_task-WheelOfFortune_run-01_NSP-2.ns5
+    """
+    stem = os.path.splitext(os.path.basename(path_or_filename))[0]
+    match = NEURAL_RECORDING_PATTERN.match(stem)
+    if match is None:
+        raise ValueError(
+            f'Neural recording filename does not match expected pattern: {path_or_filename}'
+        )
+
+    parsed = match.groupdict()
+    return {
+        'subject': parsed['subject'],
+        'emu_id': int(parsed['emu_id']),
+        'task': parsed['task'],
+    }
+
+
 def save_downsampled_lfp_mat(lfp, output_path, target_fs=1000, lowpass_hz=400):
     """Save downsampled LFP and basic metadata to a MATLAB .mat file."""
     if not hasattr(lfp, 'raw_lfp'):
@@ -203,7 +228,10 @@ class LFP_processor:
 
         # Basic info about the recording
         self.filename = os.path.basename(path_to_file)
-        self.subject, self.emu_id, self.task = self.filename.split('_')[:3]
+        session_metadata = parse_neural_recording_filename(self.filename)
+        self.subject = session_metadata['subject']
+        self.emu_id = session_metadata['emu_id']
+        self.task = session_metadata['task']
 
         # Load the recording and build the channel table
         self.recording = load_blackrock_recording(path_to_file)

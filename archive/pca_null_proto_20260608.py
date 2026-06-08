@@ -1,3 +1,29 @@
+"""
+Archived prototype script from June 8, 2026 for processed-LFP exploration.
+
+This earlier snapshot predates the later refactor into separate processed,
+decomposition, and exploratory workflows. It mixes together several ideas in
+one file:
+
+1. A first-pass `ProcessedLFP` class for loading downsampled MAT files and
+   computing PSDs and spectrograms.
+2. A phase-randomized PCA null analysis on spectrogram power and on
+   z-scored log-power, used to test whether apparent low-dimensional
+   structure exceeds a PSD-matched surrogate baseline.
+3. Quick visualization of PSDs, spectrograms, and PCA component shapes.
+4. A rough QC scaffold that was never completed but shows the intended
+   direction for channel and interval quality metrics.
+
+Useful landmarks below this docstring:
+- Early `ProcessedLFP` prototype: roughly lines 15-123.
+- Phase-randomization helper: roughly lines 125-136.
+- PCA null analysis for raw and z-scored log-power: roughly lines 184-269.
+- Unfinished QC scaffold: roughly lines 284 onward.
+
+This file is kept strictly as an archival prototype so later refactors can be
+traced back to the original one-file analysis workflow.
+"""
+
 #%%
 import os
 
