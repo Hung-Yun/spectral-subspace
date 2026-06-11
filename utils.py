@@ -1,4 +1,5 @@
 import os
+import numpy as np
 
 NS5DIR_CANDIDATES = (
     "/Volumes/stitched/EMU-18112",
@@ -10,6 +11,47 @@ BEHAVDIR_CANDIDATES = (
     "/mnt/projectworlds/EMU-18112",
 )
 
+BANDS = {
+    'delta': (0.5, 4.0),
+    'theta': (4.0, 8.0),
+    'alpha': (8.0, 13.0),
+    'beta': (13.0, 30.0),
+    'gamma': (30.0, 70.0),
+}
+
+
+def apply_transform(values, transform='raw', axis=None, eps=1e-12):
+    """
+    Apply a simple numeric transform to an array.
+
+    `axis` controls where z-scoring/log shifting is estimated. For example,
+    use axis=1 for a features x time matrix to transform each feature over time.
+    """
+    x = np.asarray(values, dtype=float)
+
+    def zscore(arr):
+        mean = np.nanmean(arr, axis=axis, keepdims=True)
+        std = np.nanstd(arr, axis=axis, keepdims=True)
+        std = np.where(std == 0, 1.0, std)
+        return (arr - mean) / std
+
+    def log_safe(arr):
+        arr_min = np.nanmin(arr, axis=axis, keepdims=True)
+        shift = np.where(arr_min <= 0, -arr_min + eps, 0.0)
+        return np.log(arr + shift + eps)
+
+    if transform == 'raw':
+        return x
+    if transform == 'zscore':
+        return zscore(x)
+    if transform == 'log':
+        return log_safe(x)
+    if transform == 'log_zscore':
+        return zscore(log_safe(x))
+    raise ValueError(
+        f"Unsupported transform {transform!r}. "
+        "Use one of: 'raw', 'zscore', 'log', 'log_zscore'."
+    )
 
 def _get_repo_dir():
     return os.path.dirname(os.path.abspath(__file__))
@@ -57,20 +99,40 @@ def _get_behavdir(behavdir=None):
         + "or use /mnt/projectworlds/EMU-18112 on Linux/SSH."
     )
 
-# def _load_behavioral_data(behavdir=None):
-#     """
-#     Loop through the ns5 dir. For each mat file, check if there is a corresponding folder in the behav dir.
-#     If so, make a copy to the data/behavior folder here. 
-#     """
-#     behavdir = _get_behavdir(behavdir)
-#     ns5dir = _get_ns5dir()
 
-#     for filename in os.listdir(ns5dir):
+def get_data_path(session_name):
+    """
+    Function that handles returning the paths to all data.
+    """
 
-#     if not os.path.exists(behav_data_path):
-#         raise FileNotFoundError(f"Could not find behavioral data at {behav_data_path}.")
-#     return pd.read_csv(behav_data_path)
+    folder = 'data/neural'
+    for filename in os.listdir(folder):
+        if filename.startswith(session_name) and filename.endswith('.mat'):
+            neural_path = os.path.join(folder, filename)
+        elif filename.startswith(session_name) and filename.endswith('.nev'):
+            nev_path = os.path.join(folder, filename)
+    
+    folder = 'data/behavior'
+    for filename in os.listdir(folder):
+        if filename.startswith(session_name):
+            behav_path = os.path.join(folder, filename)
 
+    ## Only temporary
+    try:
+        folder = 'data/temp'
+        for filename in os.listdir(folder):
+            if filename.startswith(session_name) and filename.endswith('.ns5'):
+                temp_path = os.path.join(folder, filename)
+    except:
+        temp_path = None
+
+
+    return {
+        'neural': neural_path,     # neural means downsampled LFP
+        'nev': nev_path,
+        'behavior': behav_path,
+        'temp': temp_path,
+    }
 
 
 LW = 0.8
