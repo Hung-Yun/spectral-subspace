@@ -1,7 +1,5 @@
-#%% NOTE: Potentially change filename to downsample.py
 #%% Should also create a separate qc.py script for the LFP_QC class
 
-import sys
 import os
 import argparse
 import scipy
@@ -293,7 +291,12 @@ class LFP_processor:
         return 'LFP Processor for ' + self.filename[:-4]
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Preprocess one EMU session.')
+    parser = argparse.ArgumentParser(description='Downsample one Blackrock NS5 file into an LFP MAT file.')
+    parser.add_argument(
+        '--input-ns5',
+        type=str,
+        help='Direct path to one NS5 file. If set, --subject/--emu-id lookup is skipped.',
+    )
     parser.add_argument('--subject', type=str, help='Patient code, e.g. YFB.')
     parser.add_argument('--emu-id', type=int, help='EMU id as integer, e.g. 44 for EMU-0044.')
     parser.add_argument(
@@ -328,30 +331,40 @@ def parse_args():
 
 def main():
     args = parse_args()
-    ns5dir = _get_ns5dir(args.ns5dir)
 
-    if args.subject is None or args.emu_id is None:
-        raise ValueError('Please provide both --subject and --emu-id.')
-
-    if not args.no_match_sessions:
-        sessions = load_sessions(ns5dir=ns5dir)
-        session = get_session_row(args.subject, args.emu_id, sessions=sessions)
-        print(f"Loading {session['patient']} EMU-{int(session['emu_id']):04d}")
-        print(f"NS5 path: {session['ns5_path']}")
-        print(f"NS5 size (bytes): {int(session['size'])}")
-
-    else:
+    if args.input_ns5 is not None:
+        ns5_path = os.path.abspath(os.path.expanduser(args.input_ns5))
+        if not os.path.exists(ns5_path):
+            raise FileNotFoundError(f'NS5 file does not exist: {ns5_path}')
+        session_metadata = parse_neural_recording_filename(ns5_path)
         session = {
-            'patient': args.subject,
-            'emu_id': args.emu_id,
-            'ns5_path': get_ns5_path(
-                args.subject,
-                args.emu_id,
-                ns5dir=ns5dir,
-            ),
+            'patient': session_metadata['subject'],
+            'emu_id': session_metadata['emu_id'],
+            'ns5_path': ns5_path,
         }
-        print(f"Loading {session['patient']} EMU-{int(session['emu_id']):04d}")
-        print(f"NS5 path: {session['ns5_path']}")
+    else:
+        ns5dir = _get_ns5dir(args.ns5dir)
+
+        if args.subject is None or args.emu_id is None:
+            raise ValueError('Please provide --input-ns5, or both --subject and --emu-id.')
+
+        if not args.no_match_sessions:
+            sessions = load_sessions(ns5dir=ns5dir)
+            session = get_session_row(args.subject, args.emu_id, sessions=sessions)
+        else:
+            session = {
+                'patient': args.subject,
+                'emu_id': args.emu_id,
+                'ns5_path': get_ns5_path(
+                    args.subject,
+                    args.emu_id,
+                    ns5dir=ns5dir,
+                ),
+            }
+
+    print(f"Loading {session['patient']} EMU-{int(session['emu_id']):04d}")
+    print(f"NS5 path: {session['ns5_path']}")
+    print(f"NS5 size (bytes): {int(os.path.getsize(session['ns5_path']))}")
 
     output_path = args.output_mat or get_output_mat_path(session['ns5_path'])
     if os.path.exists(output_path):

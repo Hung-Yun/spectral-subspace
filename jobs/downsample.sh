@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=preprocess
-#SBATCH --output=logs/preprocess-%j.out
-#SBATCH --error=logs/preprocess-%j.err
+#SBATCH --job-name=downsample
+#SBATCH --output=logs/downsample-%j.out
+#SBATCH --error=logs/downsample-%j.err
 #SBATCH --time=01:00:00
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=32G
@@ -15,8 +15,8 @@ cd "${REPO_DIR}"
 mkdir -p logs
 
 if [ "$#" -lt 2 ]; then
-  echo "Usage: sbatch jobs/preprocess.sh SUBJECT EMU_ID [REGION ...]"
-  echo "Example: sbatch jobs/preprocess.sh YFB 44 HPC"
+  echo "Usage: sbatch jobs/downsample.sh SUBJECT EMU_ID [REGION ...]"
+  echo "Example: sbatch jobs/downsample.sh YFB 44 HPC"
   exit 1
 fi
 
@@ -43,7 +43,7 @@ if [ "${#REGIONS[@]}" -gt 0 ]; then
   REGION_ARGS=(--regions "${REGIONS[@]}")
 fi
 
-echo "Starting preprocess job"
+echo "Starting downsample job"
 echo "Subject: ${SUBJECT}"
 echo "EMU ID: ${EMU_ID}"
 echo "Regions: ${REGIONS[*]:-HPC}"
@@ -52,7 +52,7 @@ echo "Host: $(hostname)"
 echo "Job ID: ${SLURM_JOB_ID:-interactive}"
 echo "Repo dir: ${REPO_DIR}"
 
-uv run python "${REPO_DIR}/preprocess.py" \
+uv run python "${REPO_DIR}/downsample.py" \
   --subject "${SUBJECT}" \
   --emu-id "${EMU_ID}" \
   "${REGION_ARGS[@]}" \
