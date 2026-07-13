@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 from sklearn.decomposition import PCA
-from simulate_core import generate_oscillation_trace
+from archive.old_handrolled_simulation.simulate_core import generate_oscillation_trace
 from spectral import get_autocorr, get_power_cov, get_spectrogram
 from utils import fig_set, finish_plot
 

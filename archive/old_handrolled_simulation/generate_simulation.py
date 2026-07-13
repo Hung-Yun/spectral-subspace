@@ -5,7 +5,7 @@ import os
 import numpy as np
 from scipy import io
 
-from simulate_core import generate_oscillation_trace, generate_pinknoise_trace
+from archive.old_handrolled_simulation.simulate_core import generate_oscillation_trace, generate_pinknoise_trace
 
 
 def parse_args():

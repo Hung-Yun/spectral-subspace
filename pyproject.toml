@@ -13,4 +13,5 @@ dependencies = [
     "scipy>=1.13.1",
     "seaborn>=0.13.2",
     "spikeinterface[full]>=0.103.2",
+    "neurodsp>=2.0.0",
 ]

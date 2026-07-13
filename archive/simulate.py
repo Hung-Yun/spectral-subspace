@@ -19,7 +19,7 @@ if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
 
 # import fa
-from simulate_core import generate_oscillation_trace
+from archive.old_handrolled_simulation.simulate_core import generate_oscillation_trace
 from spectral import get_autocorr, get_power_cov, get_psd, get_spectrogram
 from utils import fig_set, finish_plot
 
