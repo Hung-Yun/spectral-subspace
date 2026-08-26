@@ -1,5 +1,10 @@
+eyelinkio==0.3.0
+fooof==1.0.0
+specparam==2.0.0rc7
+h5py>=3.11
 ipykernel>=6.31.0
 matplotlib>=3.9.4
+mne>=1.8
 neo>=0.14.3
 numpy>=2.0.2
 pandas>=2.0

@@ -162,7 +162,12 @@ class FAResults:
         L = self.fa.components_.T # (D x n_components)
         Ph = self.private_variance # (D,)
         P = (L.T @ np.linalg.inv(L @ L.T + np.diag(Ph))).T # (D x n_components)
+        
+        # Z = E[z|X], the best model-based estimate of the latent state
+        # Equivalent to self.fa.transform(self.data)
         Z = np.dot(self.data - self.fa.mean_, P) # (N x n_components)
+
+        
         if not orthonormalize:
             self.transformed_latents = Z
         else:

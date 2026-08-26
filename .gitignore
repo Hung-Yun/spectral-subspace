@@ -5,9 +5,7 @@ __pycache__/
 build/
 AGENTS.md
 dist/
-data/behavior/
-data/neural/
-data/temp/
+data/
 wheels/
 *.egg-info
 logs/
@@ -16,4 +14,4 @@ logs/
 tmp/
 plots/
 .venv/
-slide_deck/
+archive/

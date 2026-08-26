@@ -5,13 +5,19 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+    "eyelinkio==0.3.0",
+    "fooof==1.0.0",
+    "h5py>=3.11",
     "ipykernel>=6.31.0",
     "matplotlib>=3.9.4",
+    "mne>=1.8",
     "neo>=0.14.3",
     "numpy>=2.0.2",
+    "pandas>=2.0",
     "probeinterface>=0.3.1",
     "scipy>=1.13.1",
     "seaborn>=0.13.2",
     "spikeinterface[full]>=0.103.2",
     "neurodsp>=2.0.0",
+    "specparam==2.0.0rc7",
 ]

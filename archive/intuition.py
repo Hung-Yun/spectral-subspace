@@ -5,6 +5,7 @@ import scipy.io
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import signal
+import utils
 
 #%% FIRLS filter kernel design and inspection
 
@@ -162,4 +163,131 @@ for i in range(len(wavelets)):
 plt.xlabel('Time (s)')
 plt.tight_layout()
 plt.show()
+# %%
+
+#%% Cartoon PSD changes
+
+def plot_cartoon_psd_changes():
+    """Draw four separate schematic comparisons between pairs of PSDs."""
+    frequency = np.linspace(0, 1, 300)
+
+    def gaussian(center, width, height):
+        return height * np.exp(-0.5 * ((frequency - center) / width) ** 2)
+
+    # A gently irregular 1/f-like background shared by all four cartoons.
+    wiggles = (
+        0.018 * np.sin(8 * np.pi * frequency + 0.4)
+        + 0.012 * np.sin(19 * np.pi * frequency + 1.1)
+        + 0.007 * np.sin(37 * np.pi * frequency + 0.2)
+    )
+    background = 1.05 - 0.62 * frequency + wiggles
+    base = background + gaussian(0.25, 0.045, 0.25) + gaussian(0.58, 0.055, 0.10)
+
+    psd_pairs = (
+        # Localized oscillatory-power reduction.
+        (
+            base,
+            background + gaussian(0.25, 0.045, 0.10) + gaussian(0.58, 0.055, 0.10),
+        ),
+        # Broadband power shift.
+        (base, base + 0.14),
+        # Oscillation-frequency shift.
+        (
+            base,
+            background + gaussian(0.32, 0.045, 0.25) + gaussian(0.58, 0.055, 0.10),
+        ),
+        # Spectral-exponent change, pivoting around the main peak.
+        (
+            base,
+            background
+            - 0.28 * (frequency - 0.25)
+            + gaussian(0.25, 0.045, 0.25)
+            + gaussian(0.58, 0.055, 0.10),
+        ),
+    )
+
+    colors = ("#FF0000", "#00FF0D")
+    figures = []
+    for pair in psd_pairs:
+        fig = plt.figure(figsize=(2, 2), dpi=300)
+        ax = fig.add_subplot()
+        for psd, color in zip(pair, colors):
+            ax.plot(
+                frequency,
+                psd,
+                color=color,
+                linewidth=3,
+                solid_capstyle='round',
+                solid_joinstyle='round',
+            )
+        ax.set_xlim(frequency[0], frequency[-1])
+        ax.set_ylim(0.35, 1.38)
+        ax.set_xlabel('Frequency (Hz)')
+        ax.set_ylabel('PSD (V^2/Hz)')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        utils.finish_plot()
+        figures.append(fig)
+
+    return figures
+
+plot_cartoon_psd_changes()
+# %%
+
+def plot_cartoon_weights(seed=4):
+    """Illustrate a smooth set of weights over 100 frequency features."""
+    rng = np.random.default_rng(seed)
+    frequency_idx = np.arange(100)
+    smoothing_kernel = signal.windows.gaussian(31, std=6)
+    smoothing_kernel /= smoothing_kernel.sum()
+    weights = signal.convolve(
+        np.pad(rng.normal(size=frequency_idx.size), 15, mode='reflect'),
+        smoothing_kernel,
+        mode='valid',
+    )
+    weights /= np.max(np.abs(weights))
+
+    fig = plt.figure(figsize=(2,2), dpi=300)
+    fig.patch.set_alpha(0)
+    plt.gca().patch.set_alpha(0)
+    plt.scatter(frequency_idx,weights,s=3,color='k',)
+    plt.plot(frequency_idx,weights,ls='--', lw=0.5, c='k')
+        
+    plt.xticks([0, 99], [r'$f_1$', r'$f_{k}$'])
+    plt.xlabel('Frequency')
+    plt.ylabel('Weights')
+    utils.finish_plot()
+
+plot_cartoon_weights()
+
+# %%
+
+frequency = np.linspace(0, 1, 300)
+
+def gaussian(center, width, height):
+    return height * np.exp(-0.5 * ((frequency - center) / width) ** 2)
+
+# A gently irregular 1/f-like background shared by all four cartoons.
+wiggles = (
+    0.018 * np.sin(8 * np.pi * frequency + 0.4)
+    + 0.012 * np.sin(19 * np.pi * frequency + 1.1)
+    + 0.007 * np.sin(37 * np.pi * frequency + 0.2)
+)
+background = 1.05 - 0.62 * frequency + wiggles
+base = background + gaussian(0.25, 0.045, 0.25) + gaussian(0.58, 0.055, 0.10)
+
+plt.figure(figsize=(2, 2), dpi=300)
+plt.plot(
+    frequency,
+    base,
+    linewidth=1,
+    solid_capstyle='round',
+    solid_joinstyle='round',
+)
+plt.ylim(0.35, 1.38)
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('PSD (V^2/Hz)')
+plt.xticks([])
+plt.yticks([])
+utils.finish_plot()
 # %%

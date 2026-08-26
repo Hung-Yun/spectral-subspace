@@ -1,16 +1,6 @@
 import os
 import numpy as np
 
-NS5DIR_CANDIDATES = (
-    "/Volumes/stitched/EMU-18112",
-    "/mnt/stitched/EMU-18112",
-)
-
-BEHAVDIR_CANDIDATES = (
-    "/Volumes/projectworlds/EMU-18112",
-    "/mnt/projectworlds/EMU-18112",
-)
-
 BANDS = {
     'delta': (0.5, 4.0),
     'theta': (4.0, 8.0),
@@ -19,6 +9,24 @@ BANDS = {
     'gamma': (30.0, 70.0),
 }
 
+##########################
+# == GENERAL PRINTING == #
+##########################
+
+def section(title: str):
+    print("\n" + "=" * (len(title)+5))
+    print(title)
+    print("=" * (len(title)+5))
+
+def announce(title):
+    print("\n" + "-"  * (len(title)+5))
+    print(title)
+    print("-"  * (len(title)+5))
+
+
+##############################
+# == GENERAL PREPROCSSING == #
+##############################
 
 def apply_transform(values, transform='raw', axis=None, eps=1e-12):
     """
@@ -53,89 +61,10 @@ def apply_transform(values, transform='raw', axis=None, eps=1e-12):
         "Use one of: 'raw', 'zscore', 'log', 'log_zscore'."
     )
 
-def _get_repo_dir():
-    return os.path.dirname(os.path.abspath(__file__))
 
-
-def _get_repo_datadir():
-    return os.path.join(_get_repo_dir(), 'data')
-
-
-def _get_ns5dir(ns5dir=None):
-    candidates = []
-
-    if ns5dir is not None:
-        candidates.append(ns5dir)
-
-    candidates.extend(NS5DIR_CANDIDATES)
-
-    for candidate in candidates:
-        if os.path.exists(candidate):
-            return candidate
-
-    raise FileNotFoundError(
-        "Could not find the raw NS5 data directory. Checked: "
-        + ", ".join(candidates)
-        + ". Mount stitched locally at /Volumes/stitched/EMU-18112, "
-        + "or use /mnt/stitched/EMU-18112 on Linux/SSH."
-    )
-
-def _get_behavdir(behavdir=None):
-    candidates = []
-
-    if behavdir is not None:
-        candidates.append(behavdir)
-
-    candidates.extend(BEHAVDIR_CANDIDATES)
-
-    for candidate in candidates:
-        if os.path.exists(candidate):
-            return candidate
-
-    raise FileNotFoundError(
-        "Could not find the raw behavioral data directory. Checked: "
-        + ", ".join(candidates)
-        + ". Mount projectworlds locally at /Volumes/projectworlds/EMU-18112, "
-        + "or use /mnt/projectworlds/EMU-18112 on Linux/SSH."
-    )
-
-
-def get_data_path(session_name):
-    """
-    Function that handles returning the paths to all data.
-    """
-
-    folder = 'data/neural'
-    for filename in os.listdir(folder):
-        if filename.startswith(session_name) and filename.endswith('.mat'):
-            neural_path = os.path.join(folder, filename)
-        elif filename.startswith(session_name) and filename.endswith('.nev'):
-            nev_path = os.path.join(folder, filename)
-    
-    folder = 'data/behavior'
-    for filename in os.listdir(folder):
-        if filename.startswith(session_name):
-            behav_path = os.path.join(folder, filename)
-
-    ## Only temporary
-    try:
-        folder = 'data/temp'
-        for filename in os.listdir(folder):
-            if filename.startswith(session_name) and filename.endswith('.ns5'):
-                temp_path = os.path.join(folder, filename)
-    except:
-        temp_path = None
-
-
-    return {
-        'neural': neural_path,     # neural means downsampled LFP
-        'nev': nev_path,
-        'behavior': behav_path,
-        'temp': temp_path,
-    }
-
-
-LW = 0.8
+##########################
+# == PLOTTING RELATED == #
+##########################
 
 
 def _get_plot_modules():
@@ -145,7 +74,7 @@ def _get_plot_modules():
     return matplotlib, plt, sns
 
 
-def fig_set(font_size=8, linewidth=LW):
+def fig_set(font_size=8, linewidth=0.8):
     matplotlib, _, sns = _get_plot_modules()
     sns.set(style="ticks", context="paper",
             font="sans-serif",
